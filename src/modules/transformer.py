@@ -55,7 +55,7 @@ class TransformerDecoder(nn.Module):
         self.pos_embeddings = nn.Embedding(config.max_seq_len, config.d_model)
         self.emb_drop = nn.Dropout(getattr(config, "dropout", 0.1))
 
-        self.layers = nn.ModuleList(
+        self.layers: nn.ModuleList[TransformerLayer] = nn.ModuleList(
             [TransformerLayer(config) for _ in range(config.num_layers)]
         )
 
@@ -95,8 +95,9 @@ class TransformerDecoder(nn.Module):
         # Scale residual projection weights (attn.proj, ffn.w2).
         scale = (2.0 * num_layers) ** -0.5
         for layer in self.layers:
-            nn.init.normal_(layer.attn.proj.weight, mean=0.0, std=0.02 * scale)
-            nn.init.normal_(layer.ffn.w2.weight, mean=0.0, std=0.02 * scale)
+            layer_typed: TransformerLayer = layer
+            nn.init.normal_(layer_typed.attn.proj.weight, mean=0.0, std=0.02 * scale)
+            nn.init.normal_(layer_typed.ffn.w2.weight, mean=0.0, std=0.02 * scale)
 
     # ------------------------------------------------------------------
     # Forward
