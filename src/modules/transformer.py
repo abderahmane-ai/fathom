@@ -21,7 +21,7 @@ Usage
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import torch
 import torch.nn as nn
@@ -55,7 +55,7 @@ class TransformerDecoder(nn.Module):
         self.pos_embeddings = nn.Embedding(config.max_seq_len, config.d_model)
         self.emb_drop = nn.Dropout(getattr(config, "dropout", 0.1))
 
-        self.layers: nn.ModuleList[TransformerLayer] = nn.ModuleList(
+        self.layers: nn.ModuleList = nn.ModuleList(
             [TransformerLayer(config) for _ in range(config.num_layers)]
         )
 
@@ -95,7 +95,7 @@ class TransformerDecoder(nn.Module):
         # Scale residual projection weights (attn.proj, ffn.w2).
         scale = (2.0 * num_layers) ** -0.5
         for layer in self.layers:
-            layer_typed: TransformerLayer = layer
+            layer_typed = cast(TransformerLayer, layer)
             nn.init.normal_(layer_typed.attn.proj.weight, mean=0.0, std=0.02 * scale)
             nn.init.normal_(layer_typed.ffn.w2.weight, mean=0.0, std=0.02 * scale)
 
@@ -129,23 +129,27 @@ class TransformerDecoder(nn.Module):
         if self.residual_mode == "recurrent_residual":
             # Reset per-layer memory to zeros for this batch.
             for layer in self.layers:
-                layer.rr_cell.reset_memory(B, S, device=device)
+                layer_typed = cast(TransformerLayer, layer)
+                layer_typed.rr_cell.reset_memory(B, S, device=device)
             for idx, layer in enumerate(self.layers):
-                h = layer(h, idx)
+                layer_typed = cast(TransformerLayer, layer)
+                h = layer_typed(h, idx)
 
         elif self.residual_mode == "attnres_block":
             # Block-0 = token embedding (lets every layer attend to raw input).
             blocks: list[torch.Tensor] = [h]
             partial_block: torch.Tensor = h
             for idx, layer in enumerate(self.layers):
-                blocks, partial_block = layer.forward_attnres(
+                layer_typed = cast(TransformerLayer, layer)
+                blocks, partial_block = layer_typed.forward_attnres(
                     blocks, partial_block, idx
                 )
             h = partial_block
 
         else:  # standard
             for idx, layer in enumerate(self.layers):
-                h = layer(h, idx)
+                layer_typed = cast(TransformerLayer, layer)
+                h = layer_typed(h, idx)
 
         # ── Head ──────────────────────────────────────────────────────────
         h = self.ln_f(h)
