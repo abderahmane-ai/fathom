@@ -72,15 +72,20 @@ class TransformerDecoder(nn.Module):
     # ------------------------------------------------------------------
 
     def _init_weights(self) -> None:
-        """Initialise weights following GPT-2 conventions.
+        """Initialise weights following GPT-2 and DeepNorm conventions.
 
         - Embeddings: N(0, 0.02).
         - Linear layers: N(0, 0.02), bias → 0.
         - LayerNorm: weight → 1, bias → 0.
-        - Residual projections scaled by 1/√(2·num_layers) to keep output
-          variance stable at depth (Megatron-LM convention).
+        - Standard/AttnRes: Residual projections scaled by 1/√(2·num_layers).
+        - Recurrent Residual: Residual projections scaled by DeepNorm beta = (8N)^-0.25.
         """
         num_layers = len(self.layers)
+        num_sublayers = num_layers * 2
+        
+        # DeepNorm beta constant
+        beta = (8.0 * num_sublayers) ** -0.25
+
         for module in self.modules():
             if isinstance(module, nn.Linear):
                 nn.init.normal_(module.weight, mean=0.0, std=0.02)
@@ -93,11 +98,23 @@ class TransformerDecoder(nn.Module):
                 nn.init.zeros_(module.bias)
 
         # Scale residual projection weights (attn.proj, ffn.w2).
-        scale = (2.0 * num_layers) ** -0.5
-        for layer in self.layers:
-            layer_typed = cast(TransformerLayer, layer)
-            nn.init.normal_(layer_typed.attn.proj.weight, mean=0.0, std=0.02 * scale)
-            nn.init.normal_(layer_typed.ffn.w2.weight, mean=0.0, std=0.02 * scale)
+        if self.residual_mode == "recurrent_residual":
+            # DeepNorm initialization
+            for layer in self.layers:
+                layer_typed = cast(TransformerLayer, layer)
+                nn.init.normal_(layer_typed.attn.proj.weight, mean=0.0, std=0.02 * beta)
+                nn.init.normal_(layer_typed.ffn.w2.weight, mean=0.0, std=0.02 * beta)
+                
+                # Also scale the memory projection in RR mode
+                nn.init.normal_(layer_typed.rr_cell.proj_m.weight, mean=0.0, std=0.02 * beta)
+        else:
+            # Megatron-LM / Standard initialization
+            scale = (2.0 * num_layers) ** -0.5
+            for layer in self.layers:
+                layer_typed = cast(TransformerLayer, layer)
+                nn.init.normal_(layer_typed.attn.proj.weight, mean=0.0, std=0.02 * scale)
+                nn.init.normal_(layer_typed.ffn.w2.weight, mean=0.0, std=0.02 * scale)
+
 
     # ------------------------------------------------------------------
     # Forward

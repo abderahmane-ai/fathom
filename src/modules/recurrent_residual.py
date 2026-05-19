@@ -36,36 +36,51 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class RMSNorm(nn.Module):
+    """RMS normalisation with a learnable scale parameter."""
+    def __init__(self, d_model: int, eps: float = 1e-5) -> None:
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(d_model))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        rms = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return self.weight * (x * rms)
+
+
 class RecurrentResidualCell(nn.Module):
-    """Gated recurrent residual connection across transformer layers.
+    """Gated recurrent residual connection with DeepNorm stability upgrades.
 
     Args:
         d_model: Hidden dimension ``d``.
-        num_layers: Total transformer layers.  Depth embeddings are allocated
-                    for ``num_layers * 2`` sublayer positions (Attn + FFN).
-        eps: Epsilon for RMSNorm numerical stability.
+        num_layers: Total transformer layers.  Used for DeepNorm alpha and
+                    to allocate depth embeddings for ``num_layers * 2`` positions.
+        eps: Epsilon for normalisation stability.
     """
 
     def __init__(self, d_model: int, num_layers: int, eps: float = 1e-5) -> None:
         super().__init__()
         self.d_model = d_model
-        self.num_sublayers = num_layers * 2  # Attn + FFN per layer
+        self.num_layers = num_layers
+        self.num_sublayers = num_layers * 2
         self.eps = eps
 
+        # ── DeepNorm constants ──────────────────────────────────────────
+        # Alpha scales the residual branch (h_prev).
+        # Calculated as (2 * N_sublayers)**0.25
+        self.alpha = (2.0 * self.num_sublayers) ** 0.25
+
         # ── Reset gate: W_r · LN(h_prev) + b_r ──────────────────────────
-        # Initialise to strongly negative bias so gate ≈ 0 at init,
-        # making h_new ≈ h_prev + y (identity-like start).
         self.gate_r = nn.Linear(d_model, d_model)
         nn.init.zeros_(self.gate_r.weight)
         nn.init.constant_(self.gate_r.bias, -3.0)
 
         # ── Memory projection: W_m · RMSNorm(m) ──────────────────────────
-        # Zero-init weight → zero injection at init (no noise from memory).
+        self.norm_m = RMSNorm(d_model, eps=eps)
         self.proj_m = nn.Linear(d_model, d_model, bias=False)
         nn.init.zeros_(self.proj_m.weight)
 
         # ── Write gate: W_α · y + b_α + depth_emb ────────────────────────
-        # Negative bias → low write rate at init; memory fills gradually.
         self.gate_alpha = nn.Linear(d_model, d_model)
         nn.init.zeros_(self.gate_alpha.weight)
         nn.init.constant_(self.gate_alpha.bias, -2.0)
@@ -74,25 +89,12 @@ class RecurrentResidualCell(nn.Module):
         self.depth_emb = nn.Embedding(self.num_sublayers, d_model)
         nn.init.zeros_(self.depth_emb.weight)
 
+        # ── Learnable initial memory ────────────────────────────────────
+        # Starts at zero but learns a global prior.
+        self.m_init = nn.Parameter(torch.zeros(d_model))
+
         # Memory: not a registered buffer; managed externally via reset_memory.
-        # Shape: (B, S, d_model) — set by reset_memory before each forward pass.
         self.m: torch.Tensor = torch.zeros(1, 1, d_model)
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _rms_norm(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply RMS normalisation (no learned scale — used for memory only).
-
-        Args:
-            x: Input ``(B, S, d_model)``.
-
-        Returns:
-            RMS-normalised tensor of the same shape.
-        """
-        rms = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-        return x * rms
 
     # ------------------------------------------------------------------
     # Public API
@@ -104,19 +106,16 @@ class RecurrentResidualCell(nn.Module):
         seq_len: int,
         device: Optional[torch.device] = None,
     ) -> None:
-        """Reset the memory state to zeros.
+        """Reset the memory state to the learnable initial value.
 
         Must be called by ``TransformerDecoder`` at the start of every forward
         pass to ensure clean state for each new batch.
-
-        Args:
-            batch_size: Batch size ``B``.
-            seq_len: Sequence length ``S``.
-            device: Target device.  Defaults to the parameter device.
         """
         if device is None:
-            device = next(self.parameters()).device
-        self.m = torch.zeros(batch_size, seq_len, self.d_model, device=device)
+            device = self.m_init.device
+        
+        # Expand m_init to (B, S, d)
+        self.m = self.m_init.view(1, 1, -1).expand(batch_size, seq_len, -1).contiguous()
 
     def forward(
         self,
@@ -125,48 +124,39 @@ class RecurrentResidualCell(nn.Module):
         layer_idx: int,
         sublayer: int = 0,
     ) -> torch.Tensor:
-        """Compute recurrent residual update.
+        """Compute recurrent residual update using DeepNorm scaling.
 
-        Args:
-            h_prev: Previous hidden state ``(B, S, d_model)``.
-            y: Sublayer output ``(B, S, d_model)``.
-            layer_idx: Zero-based transformer layer index.
-            sublayer: 0 for the Attn sublayer, 1 for the FFN sublayer.
-                      Used to index depth embeddings.
+        Equations:
+            h_norm = LayerNorm(h_prev)
+            r      = sigmoid(W_r · h_norm + b_r)
+            m_inj  = W_m · RMSNorm(m)
+            h_new  = LayerNorm(alpha · h_prev + y + r ⊙ m_inj)  [DeepNorm]
 
-        Returns:
-            Updated hidden state ``h_new`` of shape ``(B, S, d_model)``.
-
-        Preconditions:
-            * ``reset_memory`` must have been called for the current batch
-              before the first ``forward`` call.
-            * ``0 <= sublayer <= 1``.
+            alpha  = sigmoid(W_α · y + b_α + depth_emb)
+            m_new  = alpha ⊙ y + (1 − alpha) ⊙ m
         """
-        assert h_prev.shape[-1] == self.d_model, (
-            f"Expected d_model={self.d_model}, got {h_prev.shape[-1]}"
-        )
-
         m = self.m
 
         # ── Reset gate ────────────────────────────────────────────────────
-        h_norm = F.layer_norm(h_prev, (self.d_model,))
-        r = torch.sigmoid(self.gate_r(h_norm))            # (B, S, d)
+        h_norm_pre = F.layer_norm(h_prev, (self.d_model,))
+        r = torch.sigmoid(self.gate_r(h_norm_pre))
 
         # ── Memory injection ──────────────────────────────────────────────
-        m_inj = self.proj_m(self._rms_norm(m))            # (B, S, d)
+        m_inj = self.proj_m(self.norm_m(m))
 
-        # ── Residual update ───────────────────────────────────────────────
-        h_new = h_prev + y + r * m_inj                    # (B, S, d)
+        # ── Residual update (DeepNorm) ───────────────────────────────────
+        # Scale h_prev by alpha, add sublayer output and memory injection.
+        # Then apply final LayerNorm as per DeepNorm / Post-LN stability.
+        h_combined = self.alpha * h_prev + y + r * m_inj
+        h_new = F.layer_norm(h_combined, (self.d_model,))
 
         # ── Write gate & memory update ────────────────────────────────────
         sublayer_pos = layer_idx * 2 + sublayer
         depth_bias = self.depth_emb(
             torch.tensor(sublayer_pos, device=h_prev.device)
-        )                                                  # (d,)
-        alpha = torch.sigmoid(
-            self.gate_alpha(y) + depth_bias               # (B, S, d)
         )
-        # EMA update; gradients flow backwards across layers
+        alpha = torch.sigmoid(self.gate_alpha(y) + depth_bias)
+        
         m_new = alpha * y + (1.0 - alpha) * m
         self.m = m_new
 

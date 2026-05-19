@@ -25,33 +25,31 @@ def cell(d_model, num_layers):
 
 
 class TestRRCellInit:
-    """At initialisation the cell must approximate a standard residual."""
+    """At initialisation the cell follows DeepNorm residual logic."""
 
-    def test_identity_at_init(self, cell, B, S, d_model):
-        """h_new ≈ h_prev + y when gate_r ≈ 0 and proj_m.weight = 0."""
+    def test_deepnorm_at_init(self, cell, B, S, d_model):
+        """h_new ≈ LN(alpha * h_prev + y) when gates are closed at init."""
         cell.reset_memory(B, S)
         h_prev = torch.randn(B, S, d_model)
         y = torch.randn(B, S, d_model)
 
         h_new = cell(h_prev, y, layer_idx=0, sublayer=0)
-        expected = h_prev + y
+        
+        # At init: r ≈ 0, proj_m ≈ 0.  So h_new ≈ LN(alpha * h_prev + y)
+        expected = F.layer_norm(cell.alpha * h_prev + y, (d_model,))
+        
+        assert_close(h_new, expected, atol=1e-3, rtol=1e-3)
 
-        # Allow a small deviation because gate_r is not exactly 0 (bias=-3).
-        assert_close(h_new, expected, atol=1e-2, rtol=1e-2)
-
-    def test_proj_m_zero_means_no_injection(self, cell, B, S, d_model):
-        """With proj_m.weight=0, memory_injection=0 → h_new = h_prev + y exactly."""
-        # proj_m.weight is already zeroed at init.
-        assert cell.proj_m.weight.abs().max() == 0.0
-
-        cell.reset_memory(B, S)
-        # Also zero gate bias so r=sigmoid(0)=0.5 but injection=0.
+    def test_m_init_is_learnable(self, cell, B, S, d_model):
+        """m_init should be a learnable parameter initialized to zero."""
+        assert isinstance(cell.m_init, torch.nn.Parameter)
+        assert cell.m_init.abs().max() == 0.0
+        
+        # Changing m_init should change the reset value.
         with torch.no_grad():
-            cell.proj_m.weight.zero_()
-        h_prev = torch.randn(B, S, d_model)
-        y = torch.randn(B, S, d_model)
-        h_new = cell(h_prev, y, layer_idx=0, sublayer=0)
-        assert_close(h_new, h_prev + y, atol=1e-6, rtol=1e-6)
+            cell.m_init.fill_(1.0)
+        cell.reset_memory(B, S)
+        assert cell.m.abs().min() == 1.0
 
 
 class TestRRCellMemoryUpdate:
@@ -70,14 +68,17 @@ class TestRRCellMemoryUpdate:
         # Recompute alpha manually.
         depth_pos = torch.tensor(0)  # layer=0, sublayer=0 → pos=0
         depth_bias = cell.depth_emb(depth_pos)
-        alpha = torch.sigmoid(cell.gate_alpha(y) + depth_bias)
-        expected_m = alpha * y + (1.0 - alpha) * m_before
+        alpha_gate = torch.sigmoid(cell.gate_alpha(y) + depth_bias)
+        expected_m = alpha_gate * y + (1.0 - alpha_gate) * m_before
         assert_close(m_after, expected_m.detach(), atol=1e-5, rtol=1e-5)
 
     def test_memory_accumulates_across_layers(self, cell, B, S, d_model):
         """Memory should be non-zero after at least one forward pass."""
         cell.reset_memory(B, S)
-        assert cell.m.abs().sum() == 0.0, "Memory should start at zero."
+        # Ensure m_init is zero for this test.
+        with torch.no_grad():
+            cell.m_init.zero_()
+        cell.reset_memory(B, S)
 
         y = torch.randn(B, S, d_model)
         cell(torch.zeros(B, S, d_model), y, layer_idx=0, sublayer=0)
@@ -93,7 +94,6 @@ class TestRRCellDepthEmbedding:
         pos_attn = torch.tensor(0 * 2 + 0)  # layer=0, sublayer=0
         pos_ffn = torch.tensor(0 * 2 + 1)   # layer=0, sublayer=1
 
-        # After training the embeddings would differ; at init both are zero.
         # Force them to differ to test the indexing logic.
         with torch.no_grad():
             cell.depth_emb.weight[pos_attn] = torch.ones(d_model)
@@ -140,12 +140,14 @@ class TestRRCellGradients:
 class TestRRCellReset:
     """Memory reset behaviour."""
 
-    def test_reset_zeros_memory(self, cell, B, S, d_model):
-        """reset_memory must produce an all-zero memory tensor."""
-        # Pollute memory first.
-        cell.m = torch.ones(B, S, d_model)
+    def test_reset_uses_m_init(self, cell, B, S, d_model):
+        """reset_memory must produce memory tensor expanded from m_init."""
+        with torch.no_grad():
+            cell.m_init.normal_()
+        expected = cell.m_init.view(1, 1, -1).expand(B, S, -1)
+        
         cell.reset_memory(B, S)
-        assert_close(cell.m, torch.zeros(B, S, d_model))
+        assert_close(cell.m, expected)
 
     def test_reset_changes_shape(self, cell, d_model):
         """reset_memory must resize m to the new (B, S) shape."""
