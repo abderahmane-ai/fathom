@@ -157,6 +157,7 @@ class RecurrentResidualCell(nn.Module):
             torch.tensor(sublayer_pos, device=h_prev.device)
         )
         alpha = torch.sigmoid(self.gate_alpha(y) + depth_bias)
+        self.last_alpha = alpha.detach().mean()
         
         m_new = alpha * y + (1.0 - alpha) * m
 
