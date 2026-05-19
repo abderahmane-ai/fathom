@@ -19,7 +19,6 @@ Usage
 from __future__ import annotations
 
 import math
-import logging
 from typing import Any
 
 import torch
@@ -34,13 +33,14 @@ from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import (
     LearningRateMonitor,
     ModelCheckpoint,
-    GradientAccumulationScheduler,
 )
 
 from src.modules import TransformerDecoder
 from src.data import LanguageModelDataModule
 
+import logging
 log = logging.getLogger(__name__)
+
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +54,7 @@ class LanguageModel(L.LightningModule):
     * Cross-entropy LM loss (next-token prediction).
     * AdamW optimiser with cosine LR schedule + linear warmup.
     * Per-step logging of loss, perplexity, LR, and gradient norm.
-    * WandB logging of per-layer output magnitudes every N steps.
+
 
     Args:
         model_cfg: Model configuration (``conf/model/*.yaml``).

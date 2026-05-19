@@ -13,6 +13,7 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+from einops import rearrange
 
 
 class Attention(nn.Module):
@@ -64,15 +65,14 @@ class Attention(nn.Module):
             This avoids ``-inf`` → NaN issues under mixed precision and enables
             Flash Attention kernels on supported hardware.
         """
-        B, S, _ = x.shape
-
-        # Fused QKV projection and reshape to (B, n_heads, S, head_dim).
-        qkv = (
-            self.qkv(x)
-            .view(B, S, 3, self.n_heads, self.head_dim)
-            .permute(2, 0, 3, 1, 4)
+        # Fused QKV projection and split into (three, B, n_heads, S, head_dim)
+        qkv = rearrange(
+            self.qkv(x),
+            "b s (three h d) -> three b h s d",
+            three=3,
+            h=self.n_heads,
         )
-        q, k, v = qkv.unbind(dim=0)  # each (B, n_heads, S, head_dim)
+        q, k, v = qkv[0], qkv[1], qkv[2]
 
         # Flash / memory-efficient scaled dot-product attention.
         dropout_p = self.attn_dropout if self.training else 0.0
@@ -84,5 +84,5 @@ class Attention(nn.Module):
         )  # (B, n_heads, S, head_dim)
 
         # Merge heads and project back to d_model.
-        out = attn_out.transpose(1, 2).contiguous().view(B, S, self.d_model)
+        out = rearrange(attn_out, "b h s d -> b s (h d)")
         return self.proj(out)

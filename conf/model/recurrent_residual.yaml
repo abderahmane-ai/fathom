@@ -2,6 +2,8 @@
 # @package model
 
 residual_mode: recurrent_residual
+gate_r_bias: -3.0
+gate_alpha_bias: -2.0
 
 d_model: 768
 n_heads: 12
@@ -10,3 +12,4 @@ num_layers: 12
 max_seq_len: 1024
 vocab_size: 50257
 dropout: 0.1
+

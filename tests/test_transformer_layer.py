@@ -103,3 +103,43 @@ class TestTransformerLayerAttnRes:
         _, new_partial = layer.forward_attnres([block0], partial, layer_idx=0)
         new_partial.sum().backward()
         assert partial.grad is not None
+
+
+class TestTransformerLayerRR:
+    """Recurrent Residual mode."""
+
+    def test_forward_requires_rr_cell(self, rr_cfg, B, S, d_model):
+        """forward() must raise AssertionError if rr_cell is not provided."""
+        layer = TransformerLayer(rr_cfg)
+        x = torch.randn(B, S, d_model)
+        with pytest.raises(AssertionError, match="rr_cell required"):
+            layer(x, layer_idx=0)
+
+    def test_forward_with_shared_cell(self, rr_cfg, B, S, d_model):
+        """Verify layer can use a shared RecurrentResidualCell."""
+        from src.modules.recurrent_residual import RecurrentResidualCell
+        
+        layer = TransformerLayer(rr_cfg)
+        rr_cell = RecurrentResidualCell(d_model, rr_cfg.num_layers)
+        rr_cell.reset_memory(B, S)
+        
+        x = torch.randn(B, S, d_model)
+        out = layer(x, layer_idx=0, rr_cell=rr_cell)
+        
+        assert out.shape == (B, S, d_model)
+        assert not torch.allclose(out, x)
+
+    def test_grad_flows_through_rr_path(self, rr_cfg, B, S, d_model):
+        from src.modules.recurrent_residual import RecurrentResidualCell
+        
+        layer = TransformerLayer(rr_cfg)
+        rr_cell = RecurrentResidualCell(d_model, rr_cfg.num_layers)
+        rr_cell.reset_memory(B, S)
+        
+        x = torch.randn(B, S, d_model, requires_grad=True)
+        out = layer(x, layer_idx=0, rr_cell=rr_cell)
+        out.sum().backward()
+        
+        assert x.grad is not None
+        assert rr_cell.gate_r.weight.grad is not None
+

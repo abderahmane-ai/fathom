@@ -1,7 +1,8 @@
 """Recurrent Residual Cell for transformer layers.
 
-Augments standard additive residual connections with a per-layer gated memory
+Augments standard additive residual connections with a global shared gated memory
 that persists and is selectively updated across depth.
+
 
 Equations (per sublayer call)
 ------------------------------
@@ -58,7 +59,14 @@ class RecurrentResidualCell(nn.Module):
         eps: Epsilon for normalisation stability.
     """
 
-    def __init__(self, d_model: int, num_layers: int, eps: float = 1e-5) -> None:
+    def __init__(
+        self,
+        d_model: int,
+        num_layers: int,
+        eps: float = 1e-5,
+        gate_r_bias: float = -3.0,
+        gate_alpha_bias: float = -2.0,
+    ) -> None:
         super().__init__()
         self.d_model = d_model
         self.num_layers = num_layers
@@ -73,7 +81,7 @@ class RecurrentResidualCell(nn.Module):
         # ── Reset gate: W_r · LN(h_prev) + b_r ──────────────────────────
         self.gate_r = nn.Linear(d_model, d_model)
         nn.init.zeros_(self.gate_r.weight)
-        nn.init.constant_(self.gate_r.bias, -3.0)
+        nn.init.constant_(self.gate_r.bias, gate_r_bias)
 
         # ── Memory projection: W_m · RMSNorm(m) ──────────────────────────
         self.norm_m = RMSNorm(d_model, eps=eps)
@@ -83,11 +91,12 @@ class RecurrentResidualCell(nn.Module):
         # ── Write gate: W_α · y + b_α + depth_emb ────────────────────────
         self.gate_alpha = nn.Linear(d_model, d_model)
         nn.init.zeros_(self.gate_alpha.weight)
-        nn.init.constant_(self.gate_alpha.bias, -2.0)
+        nn.init.constant_(self.gate_alpha.bias, gate_alpha_bias)
 
         # Learnable depth embedding — one per sublayer position.
         self.depth_emb = nn.Embedding(self.num_sublayers, d_model)
         nn.init.zeros_(self.depth_emb.weight)
+
 
         # ── Learnable initial memory ────────────────────────────────────
         # Starts at zero but learns a global prior.

@@ -59,6 +59,17 @@ class TransformerDecoder(nn.Module):
             [TransformerLayer(config) for _ in range(config.num_layers)]
         )
 
+        # ── Global Recurrent Residual cell ────────────────────────────────
+        self.rr_cell: Optional[nn.Module] = None
+        if self.residual_mode == "recurrent_residual":
+            from .recurrent_residual import RecurrentResidualCell
+            self.rr_cell = RecurrentResidualCell(
+                d_model=config.d_model,
+                num_layers=config.num_layers,
+                gate_r_bias=getattr(config, "gate_r_bias", -3.0),
+                gate_alpha_bias=getattr(config, "gate_alpha_bias", -2.0),
+            )
+
         self.ln_f = nn.LayerNorm(config.d_model)
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
@@ -99,14 +110,18 @@ class TransformerDecoder(nn.Module):
 
         # Scale residual projection weights (attn.proj, ffn.w2).
         if self.residual_mode == "recurrent_residual":
+            assert self.rr_cell is not None
             # DeepNorm initialization
             for layer in self.layers:
                 layer_typed = cast(TransformerLayer, layer)
                 nn.init.normal_(layer_typed.attn.proj.weight, mean=0.0, std=0.02 * beta)
                 nn.init.normal_(layer_typed.ffn.w2.weight, mean=0.0, std=0.02 * beta)
                 
-                # Also scale the memory projection in RR mode
-                nn.init.normal_(layer_typed.rr_cell.proj_m.weight, mean=0.0, std=0.02 * beta)
+            # Scale the global memory projection
+            # We can't cast to RecurrentResidualCell easily here due to lazy import,
+            # so we just check for the attribute.
+            if hasattr(self.rr_cell, "proj_m"):
+                nn.init.normal_(self.rr_cell.proj_m.weight, mean=0.0, std=0.02 * beta)
         else:
             # Megatron-LM / Standard initialization
             scale = (2.0 * num_layers) ** -0.5
@@ -144,13 +159,12 @@ class TransformerDecoder(nn.Module):
 
         # ── Layer stack ───────────────────────────────────────────────────
         if self.residual_mode == "recurrent_residual":
-            # Reset per-layer memory to zeros for this batch.
-            for layer in self.layers:
-                layer_typed = cast(TransformerLayer, layer)
-                layer_typed.rr_cell.reset_memory(B, S, device=device)
+            assert self.rr_cell is not None
+            # Reset global memory to initial learnable prior for this batch.
+            self.rr_cell.reset_memory(B, S, device=device)
             for idx, layer in enumerate(self.layers):
                 layer_typed = cast(TransformerLayer, layer)
-                h = layer_typed(h, idx)
+                h = layer_typed(h, idx, rr_cell=self.rr_cell)
 
         elif self.residual_mode == "attnres_block":
             # Block-0 = token embedding (lets every layer attend to raw input).
