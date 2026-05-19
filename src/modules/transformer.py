@@ -26,7 +26,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from src.modules.transformer_layer import TransformerLayer
+from .transformer_layer import TransformerLayer
 
 
 class TransformerDecoder(nn.Module):

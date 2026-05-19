@@ -55,3 +55,8 @@ addopts = "--tb=short -q"
 [tool.coverage.run]
 source = ["src"]
 omit = ["tests/*"]
+
+# ── Pyright ───────────────────────────────────────────────────────────────────
+[tool.pyright]
+include = ["src", "tests"]
+extraPaths = ["."]

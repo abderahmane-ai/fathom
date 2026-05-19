@@ -34,8 +34,8 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from src.modules.attention import Attention
-from src.modules.ffn import FeedForward
+from .attention import Attention
+from .ffn import FeedForward
 
 
 class TransformerLayer(nn.Module):
@@ -70,11 +70,11 @@ class TransformerLayer(nn.Module):
 
         # ── Mode-specific residual modules ──────────────────────────────────
         if config.residual_mode == "recurrent_residual":
-            from src.modules.recurrent_residual import RecurrentResidualCell
+            from .recurrent_residual import RecurrentResidualCell
             self.rr_cell = RecurrentResidualCell(config.d_model, config.num_layers)
 
         elif config.residual_mode == "attnres_block":
-            from src.modules.attnres_block import BlockAttnRes
+            from .attnres_block import BlockAttnRes
 
             block_size: int = config.attnres_block.block_size
             # block_size counts *sublayers* (Attn + FFN = 2 per transformer layer)
