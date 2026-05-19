@@ -114,7 +114,7 @@ class TestBlockAttnResEdgeCases:
     def test_raises_on_empty_blocks(self, module, B, S, d_model):
         """Must raise ValueError when blocks list is empty."""
         partial = torch.randn(B, S, d_model)
-        with pytest.raises(ValueError, match="block-0"):
+        with pytest.raises(ValueError, match="must not be empty"):
             module(blocks=[], partial_block=partial)
 
     def test_single_token_sequence(self, module, d_model):
