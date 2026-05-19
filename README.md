@@ -53,7 +53,7 @@ pytest tests/
 
 ## 📖 Methodology
 
-For a deep dive into the mathematics of Recurrent Residuals, see [methodology.md](methodology.md).
+For a deep dive into the mathematics of Recurrent Residuals, see [METHODOLOGY.md](METHODOLOGY.md).
 
 ### Key Equations (RR)
 - **Injection**: $h_{new} = \text{LayerNorm}(\alpha \cdot h_{prev} + y + r \odot W_m \text{RMSNorm}(m))$
