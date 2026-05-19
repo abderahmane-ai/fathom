@@ -17,7 +17,7 @@ from torch.optim.lr_scheduler import LambdaLR
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import lightning as L
-from lightning.pytorch.loggers import WandbLogger
+from lightning.pytorch.loggers import CSVLogger
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 
 from src.modules import TransformerDecoder
@@ -127,10 +127,9 @@ def main(cfg: DictConfig) -> None:
         ),
     ]
 
-    wandb_logger = WandbLogger(
-        project="recurrent-residuals",
+    csv_logger = CSVLogger(
+        save_dir="logs",
         name=f"{cfg.model.residual_mode}_d{cfg.model.d_model}_L{cfg.model.num_layers}",
-        config=OmegaConf.to_container(cfg, resolve=True),
     )
 
     trainer = L.Trainer(
@@ -140,7 +139,7 @@ def main(cfg: DictConfig) -> None:
         gradient_clip_val=cfg.trainer.gradient_clip_val,
         log_every_n_steps=cfg.trainer.log_every_n_steps,
         val_check_interval=cfg.trainer.val_check_interval,
-        logger=wandb_logger,
+        logger=csv_logger,
         callbacks=callbacks,
         deterministic=True,
     )

@@ -56,7 +56,6 @@ class LanguageModelDataModule(LightningDataModule):
             self.cfg.dataset_name,
             self.cfg.dataset_config,
             split=split,
-            trust_remote_code=True,
         )
 
         def _encode(batch: dict) -> dict:
