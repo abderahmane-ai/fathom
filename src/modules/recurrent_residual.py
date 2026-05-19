@@ -1,32 +1,28 @@
-"""Recurrent Residual Cell for transformer layers.
+"""Recurrent Residual Cell for Transformer layers.
 
 Augments standard additive residual connections with a global shared gated memory
-that persists and is selectively updated across depth.
+that persists and evolves across the depth dimension. This architecture enables
+long-range information persistence with O(1) memory and compute complexity.
 
-
-Equations (per sublayer call)
-------------------------------
+Equations (per sublayer transition):
     h_norm  = LayerNorm(h_prev)
-    r       = sigmoid(W_r · h_norm + b_r)          # reset gate
-    m_inj   = W_m · RMSNorm(m)                     # memory injection
-    h_new   = h_prev + y + r ⊙ m_inj               # residual update
+    r       = sigmoid(W_r · h_norm + b_r)          # Read gate
+    m_inj   = W_m · RMSNorm(m)                     # Memory projection
+    h_new   = LayerNorm(α · h_prev + y + r ⊙ m_inj) # DeepNorm update
 
     e_l     = depth_embedding[layer_idx * 2 + sublayer]
-    alpha   = sigmoid(W_α · y + b_α + e_l)         # write gate
-    m_new   = alpha ⊙ y + (1 − alpha) ⊙ m          # EMA memory update
+    α_gate  = sigmoid(W_α · y + b_α + e_l)         # Write gate
+    m_new   = α_gate ⊙ y + (1 − α_gate) ⊙ m        # State transition
 
-Design notes
-------------
-* Gates (``W_r``, ``W_α``) are full ``d_model → d_model`` linear layers,
-  not diagonal element-wise scalings.  This allows cross-dimension gating.
-* Depth bias uses a learnable ``nn.Embedding`` so each sublayer position gets
-  its own trainable offset, providing genuine depth-awareness.
-* ``m`` is stored as a plain instance attribute (not a registered buffer) and
-  is reset by the caller before each forward pass via ``reset_memory()``.
-  This avoids the DDP synchronisation pitfalls of re-assigning registered
-  buffers inside ``forward``.
-* The ``sublayer`` argument disambiguates Attn (0) and FFN (1) sublayers so
-  depth embeddings are distinct for each within the same transformer layer.
+Design Rationale:
+*   **Global Memory**: A single state 'm' is shared across all layers, enabling
+    cross-layer information flow (Depth-as-RNN).
+*   **DeepNorm Stability**: Residual branch scaling (α) and Post-LN normalization
+    ensure gradient stability at extreme depths (1,000+ layers).
+*   **DDP-Safe State**: Memory is managed as a transient instance attribute rather
+    than a registered buffer to avoid DDP synchronisation overhead during updates.
+*   **Depth Awareness**: Learnable embeddings provide distinct biases for each
+    sublayer position (2N per stack), allowing position-dependent gating.
 """
 from __future__ import annotations
 
@@ -38,7 +34,7 @@ import torch.nn.functional as F
 
 
 class RMSNorm(nn.Module):
-    """RMS normalisation with a learnable scale parameter."""
+    """Root Mean Square Normalization with learnable scaling."""
     def __init__(self, d_model: int, eps: float = 1e-5) -> None:
         super().__init__()
         self.eps = eps
@@ -50,13 +46,14 @@ class RMSNorm(nn.Module):
 
 
 class RecurrentResidualCell(nn.Module):
-    """Gated recurrent residual connection with DeepNorm stability upgrades.
+    """Gated recurrent residual connection with DeepNorm stability.
 
     Args:
-        d_model: Hidden dimension ``d``.
-        num_layers: Total transformer layers.  Used for DeepNorm alpha and
-                    to allocate depth embeddings for ``num_layers * 2`` positions.
-        eps: Epsilon for normalisation stability.
+        d_model: Hidden dimension.
+        num_layers: Total transformer layers (used to derive DeepNorm alpha).
+        eps: Epsilon for normalization stability.
+        gate_r_bias: Initial bias for the read (reset) gate.
+        gate_alpha_bias: Initial bias for the write (update) gate.
     """
 
     def __init__(
@@ -73,41 +70,31 @@ class RecurrentResidualCell(nn.Module):
         self.num_sublayers = num_layers * 2
         self.eps = eps
 
-        # ── DeepNorm constants ──────────────────────────────────────────
-        # Alpha scales the residual branch (h_prev).
-        # Calculated as (2 * N_sublayers)**0.25
+        # DeepNorm alpha constant scales the residual branch (h_prev).
         self.alpha = (2.0 * self.num_sublayers) ** 0.25
 
-        # ── Reset gate: W_r · LN(h_prev) + b_r ──────────────────────────
+        # Read Gate: Controls memory injection magnitude.
         self.gate_r = nn.Linear(d_model, d_model)
         nn.init.zeros_(self.gate_r.weight)
         nn.init.constant_(self.gate_r.bias, gate_r_bias)
 
-        # ── Memory projection: W_m · RMSNorm(m) ──────────────────────────
+        # Memory Projection: Normalized memory influence.
         self.norm_m = RMSNorm(d_model, eps=eps)
         self.proj_m = nn.Linear(d_model, d_model, bias=False)
         nn.init.zeros_(self.proj_m.weight)
 
-        # ── Write gate: W_α · y + b_α + depth_emb ────────────────────────
+        # Write Gate: Controls EMA update to the shared memory state.
         self.gate_alpha = nn.Linear(d_model, d_model)
         nn.init.zeros_(self.gate_alpha.weight)
         nn.init.constant_(self.gate_alpha.bias, gate_alpha_bias)
 
-        # Learnable depth embedding — one per sublayer position.
+        # Position-aware depth embeddings (2 per layer: Attn + FFN).
         self.depth_emb = nn.Embedding(self.num_sublayers, d_model)
         nn.init.zeros_(self.depth_emb.weight)
 
-
-        # ── Learnable initial memory ────────────────────────────────────
-        # Starts at zero but learns a global prior.
+        # Learnable initial memory state expanded to (B, S, d) per batch.
         self.m_init = nn.Parameter(torch.zeros(d_model))
-
-        # Memory: not a registered buffer; managed externally via reset_memory.
         self.m: torch.Tensor = torch.zeros(1, 1, d_model)
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
     def reset_memory(
         self,
@@ -115,15 +102,11 @@ class RecurrentResidualCell(nn.Module):
         seq_len: int,
         device: Optional[torch.device] = None,
     ) -> None:
-        """Reset the memory state to the learnable initial value.
-
-        Must be called by ``TransformerDecoder`` at the start of every forward
-        pass to ensure clean state for each new batch.
-        """
+        """Initialise shared memory with the learnable prior for a new batch."""
         if device is None:
             device = self.m_init.device
         
-        # Expand m_init to (B, S, d)
+        # Expanded to full batch shape (B, S, d).
         self.m = self.m_init.view(1, 1, -1).expand(batch_size, seq_len, -1).contiguous()
 
     def forward(
@@ -133,33 +116,21 @@ class RecurrentResidualCell(nn.Module):
         layer_idx: int,
         sublayer: int = 0,
     ) -> torch.Tensor:
-        """Compute recurrent residual update using DeepNorm scaling.
-
-        Equations:
-            h_norm = LayerNorm(h_prev)
-            r      = sigmoid(W_r · h_norm + b_r)
-            m_inj  = W_m · RMSNorm(m)
-            h_new  = LayerNorm(alpha · h_prev + y + r ⊙ m_inj)  [DeepNorm]
-
-            alpha  = sigmoid(W_α · y + b_α + depth_emb)
-            m_new  = alpha ⊙ y + (1 − alpha) ⊙ m
-        """
+        """Performs one gated residual update and memory transition."""
         m = self.m
 
-        # ── Reset gate ────────────────────────────────────────────────────
+        # 1. Read Mechanism: Generate reset signal from normalized hidden state.
         h_norm_pre = F.layer_norm(h_prev, (self.d_model,))
         r = torch.sigmoid(self.gate_r(h_norm_pre))
 
-        # ── Memory injection ──────────────────────────────────────────────
+        # 2. Injection: Merge projected memory into the hidden path.
         m_inj = self.proj_m(self.norm_m(m))
 
-        # ── Residual update (DeepNorm) ───────────────────────────────────
-        # Scale h_prev by alpha, add sublayer output and memory injection.
-        # Then apply final LayerNorm as per DeepNorm / Post-LN stability.
+        # 3. DeepNorm Residual Update: Final Post-LN stabilization.
         h_combined = self.alpha * h_prev + y + r * m_inj
         h_new = F.layer_norm(h_combined, (self.d_model,))
 
-        # ── Write gate & memory update ────────────────────────────────────
+        # 4. Write Mechanism: EMA update with depth-aware gating.
         sublayer_pos = layer_idx * 2 + sublayer
         depth_bias = self.depth_emb(
             torch.tensor(sublayer_pos, device=h_prev.device)

@@ -1,11 +1,7 @@
-"""Multi-head self-attention with Flash Attention and causal masking.
+"""Multi-head self-attention with optimized Flash Attention kernels.
 
-Uses ``torch.nn.functional.scaled_dot_product_attention`` (PyTorch ≥ 2.0),
-which dispatches to Flash Attention 2 on CUDA and a memory-efficient kernel
-on CPU — eliminating the O(S²) materialized attention matrix.
-
-Causal masking is handled natively by ``is_causal=True``, which avoids the
-NaN hazard of filling with ``float("-inf")`` under mixed precision.
+Utilizes ``torch.nn.functional.scaled_dot_product_attention`` for efficient
+memory utilization (O(S) instead of O(S²)) and native causal masking.
 """
 from __future__ import annotations
 
@@ -17,55 +13,35 @@ from einops import rearrange
 
 
 class Attention(nn.Module):
-    """Multi-head causal self-attention.
+    """Causal multi-head self-attention module.
 
     Args:
-        d_model: Hidden dimension.  Must be divisible by ``n_heads``.
+        d_model: Input dimension.
         n_heads: Number of attention heads.
-        dropout: Attention dropout probability (0.0 in eval mode).
-
-    Raises:
-        AssertionError: If ``d_model % n_heads != 0``.
+        dropout: Attention dropout probability.
     """
 
     def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1) -> None:
         super().__init__()
-        assert d_model % n_heads == 0, (
-            f"d_model ({d_model}) must be divisible by n_heads ({n_heads})."
-        )
+        assert d_model % n_heads == 0, "d_model must be divisible by n_heads."
+        
         self.d_model = d_model
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads
 
-        # Fused QKV projection — single matmul is faster than three.
+        # Fused QKV projection for single-pass matrix multiplication.
         self.qkv = nn.Linear(d_model, 3 * d_model, bias=False)
         self.proj = nn.Linear(d_model, d_model, bias=False)
-        self.attn_dropout = dropout  # passed to F.scaled_dot_product_attention
+        self.attn_dropout = dropout
 
     def forward(
         self,
         x: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Compute causal multi-head self-attention.
-
-        Args:
-            x: Input tensor ``(B, S, d_model)``.
-            mask: Optional additive bias tensor broadcastable to
-                  ``(B, n_heads, S, S)``.  Added to attention logits before
-                  softmax (e.g. for padding masks).  Should contain ``0`` for
-                  valid positions and ``-inf`` for masked ones.
-
-        Returns:
-            Output tensor ``(B, S, d_model)``.
-
-        Notes:
-            ``F.scaled_dot_product_attention`` with ``is_causal=True`` handles
-            the upper-triangular mask internally — no manual ``triu`` needed.
-            This avoids ``-inf`` → NaN issues under mixed precision and enables
-            Flash Attention kernels on supported hardware.
-        """
-        # Fused QKV projection and split into (three, B, n_heads, S, head_dim)
+        """Forward pass with optimized SDPA kernel dispatch."""
+        
+        # Project and reshape into multi-head components.
         qkv = rearrange(
             self.qkv(x),
             "b s (three h d) -> three b h s d",
@@ -74,15 +50,15 @@ class Attention(nn.Module):
         )
         q, k, v = qkv[0], qkv[1], qkv[2]
 
-        # Flash / memory-efficient scaled dot-product attention.
+        # Flash / memory-efficient scaled dot-product attention with causal mask.
         dropout_p = self.attn_dropout if self.training else 0.0
         attn_out = torch.nn.functional.scaled_dot_product_attention(
             q, k, v,
             attn_mask=mask,
             dropout_p=dropout_p,
             is_causal=True,
-        )  # (B, n_heads, S, head_dim)
+        )
 
-        # Merge heads and project back to d_model.
+        # Concatenate heads and project back to d_model.
         out = rearrange(attn_out, "b h s d -> b s (h d)")
         return self.proj(out)
