@@ -1,0 +1,14 @@
+# conf/config.yaml — root Hydra config
+#
+# All hyperparameters flow from here.  Override on the CLI:
+#   python src/train.py model=attnres trainer.max_epochs=5
+#
+# @package _global_
+
+defaults:
+  - model: standard        # which residual mode
+  - trainer: default
+  - data: wikitext103
+  - _self_
+
+seed: 42

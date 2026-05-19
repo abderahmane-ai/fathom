@@ -1,0 +1,12 @@
+# conf/data/wikitext103.yaml
+# @package data
+
+dataset_name: wikitext
+dataset_config: wikitext-103-raw-v1
+tokenizer_name: gpt2            # BPE tokenizer, vocab_size=50257
+max_seq_len: 1024
+batch_size: 8
+num_workers: 4
+train_split: train
+val_split: validation
+test_split: test

@@ -1,0 +1,12 @@
+# conf/model/standard.yaml — baseline Pre-LN transformer
+# @package model
+
+residual_mode: standard
+
+d_model: 768
+n_heads: 12
+ff_dim: 3072
+num_layers: 12
+max_seq_len: 1024
+vocab_size: 50257
+dropout: 0.1
