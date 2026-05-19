@@ -38,9 +38,16 @@ class TransformerLayer(nn.Module):
         self.ffn = FeedForward(config.d_model, config.ff_dim,
                                getattr(config, "dropout", 0.1))
 
-        self.residual_mode: str = config.residual_mode
+        # ── Mode-specific residual modules ──────────────────────────────────
+        self.rr_cell: Optional[nn.Module] = None
 
-        if config.residual_mode == "attnres_block":
+        if config.residual_mode == "recurrent_residual":
+            from .recurrent_residual import RecurrentResidualCell
+            # Defaults to per-layer cell; TransformerDecoder can override this
+            # with a shared instance to enable global memory flow.
+            self.rr_cell = RecurrentResidualCell(config.d_model, config.num_layers)
+
+        elif config.residual_mode == "attnres_block":
             from .attnres_block import BlockAttnRes
             block_size: int = config.attnres_block.block_size
             assert block_size % 2 == 0, "attnres_block.block_size must be even."
@@ -50,32 +57,55 @@ class TransformerLayer(nn.Module):
             self.attn_res = BlockAttnRes(config.d_model)
             self.ffn_res = BlockAttnRes(config.d_model)
 
+        self.residual_mode: str = config.residual_mode
+
+    # ------------------------------------------------------------------
+    # Standard / RecurrentResidual forward
+    # ------------------------------------------------------------------
+
     def forward(
         self,
         x: torch.Tensor,
         layer_idx: int,
-        rr_cell: Optional[nn.Module] = None,
-    ) -> torch.Tensor:
-        """Standard Pre-LN forward pass with optional Recurrent Residual gating."""
-        if self.residual_mode == "attnres_block":
-            raise ValueError("Use forward_attnres() for attnres_block mode.")
+        m: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """Forward pass for ``standard`` and ``recurrent_residual`` modes.
 
-        # -- Attention Sublayer --
+        Args:
+            x: Input hidden state ``(B, S, d_model)``.
+            layer_idx: Zero-based layer index used by RR depth bias.
+            m: Current memory state for RR mode.
+
+        Returns:
+            Tuple of (updated hidden state, updated memory state).
+        """
+        if self.residual_mode == "attnres_block":
+            raise ValueError(
+                "Use forward_attnres() for attnres_block mode."
+            )
+
+        # ── Attention sublayer ────────────────────────────────────────────
         y_attn = self.attn(self.ln_1(x))
+
         if self.residual_mode == "standard":
             h_mid = x + y_attn
-        else:
-            assert rr_cell is not None, "rr_cell required for RR mode."
-            h_mid = rr_cell(x, y_attn, layer_idx, sublayer=0)
+            m_mid = None
+        else:  # recurrent_residual
+            assert m is not None, "Memory state m is required for RR mode."
+            h_mid, m_mid = self.rr_cell(x, y_attn, m, layer_idx, sublayer=0)
 
-        # -- Feed-Forward Sublayer --
+        # ── FFN sublayer ──────────────────────────────────────────────────
         y_ffn = self.ffn(self.ln_2(h_mid))
+
         if self.residual_mode == "standard":
             h_new = h_mid + y_ffn
+            m_new = None
         else:
-            h_new = rr_cell(h_mid, y_ffn, layer_idx, sublayer=1)
+            assert m_mid is not None
+            h_new, m_new = self.rr_cell(h_mid, y_ffn, m_mid, layer_idx, sublayer=1)
 
-        return h_new
+        return h_new, m_new
+
 
     def forward_attnres(
         self,

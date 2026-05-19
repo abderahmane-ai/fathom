@@ -46,23 +46,24 @@ class RMSNorm(nn.Module):
 
 
 class RecurrentResidualCell(nn.Module):
-    """Gated recurrent residual connection with DeepNorm stability.
+    """Gated recurrent residual connection with DeepNorm stability upgrades.
 
     Args:
-        d_model: Hidden dimension.
-        num_layers: Total transformer layers (used to derive DeepNorm alpha).
-        eps: Epsilon for normalization stability.
-        gate_r_bias: Initial bias for the read (reset) gate.
-        gate_alpha_bias: Initial bias for the write (update) gate.
+        d_model: Hidden dimension ``d``.
+        num_layers: Total transformer layers.  Used for DeepNorm alpha and
+                    to allocate depth embeddings for ``num_layers * 2`` positions.
+        gate_r_bias: Initial bias for the reset gate (default -3.0).
+        gate_alpha_bias: Initial bias for the write gate (default -2.0).
+        eps: Epsilon for normalisation stability.
     """
 
     def __init__(
         self,
         d_model: int,
         num_layers: int,
-        eps: float = 1e-5,
         gate_r_bias: float = -3.0,
         gate_alpha_bias: float = -2.0,
+        eps: float = 1e-5,
     ) -> None:
         super().__init__()
         self.d_model = d_model
@@ -70,67 +71,87 @@ class RecurrentResidualCell(nn.Module):
         self.num_sublayers = num_layers * 2
         self.eps = eps
 
-        # DeepNorm alpha constant scales the residual branch (h_prev).
+        # ── DeepNorm constants ──────────────────────────────────────────
         self.alpha = (2.0 * self.num_sublayers) ** 0.25
 
-        # Read Gate: Controls memory injection magnitude.
+        # ── Reset gate ──────────────────────────────────────────────────
         self.gate_r = nn.Linear(d_model, d_model)
         nn.init.zeros_(self.gate_r.weight)
         nn.init.constant_(self.gate_r.bias, gate_r_bias)
 
-        # Memory Projection: Normalized memory influence.
+        # ── Memory projection ───────────────────────────────────────────
         self.norm_m = RMSNorm(d_model, eps=eps)
         self.proj_m = nn.Linear(d_model, d_model, bias=False)
         nn.init.zeros_(self.proj_m.weight)
 
-        # Write Gate: Controls EMA update to the shared memory state.
+        # ── Write gate ──────────────────────────────────────────────────
         self.gate_alpha = nn.Linear(d_model, d_model)
         nn.init.zeros_(self.gate_alpha.weight)
         nn.init.constant_(self.gate_alpha.bias, gate_alpha_bias)
 
-        # Position-aware depth embeddings (2 per layer: Attn + FFN).
+        # Learnable depth embedding — one per sublayer position.
         self.depth_emb = nn.Embedding(self.num_sublayers, d_model)
         nn.init.zeros_(self.depth_emb.weight)
 
-        # Learnable initial memory state expanded to (B, S, d) per batch.
+        # ── Learnable initial memory ────────────────────────────────────
         self.m_init = nn.Parameter(torch.zeros(d_model))
-        self.m: torch.Tensor = torch.zeros(1, 1, d_model)
 
-    def reset_memory(
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def get_initial_state(
         self,
         batch_size: int,
         seq_len: int,
         device: Optional[torch.device] = None,
-    ) -> None:
-        """Initialise shared memory with the learnable prior for a new batch."""
+    ) -> torch.Tensor:
+        """Return the initial memory state expanded to batch size.
+
+        Args:
+            batch_size: Batch size ``B``.
+            seq_len: Sequence length ``S``.
+            device: Target device.
+
+        Returns:
+            Initial memory tensor of shape ``(B, S, d_model)``.
+        """
         if device is None:
             device = self.m_init.device
-        
-        # Expanded to full batch shape (B, S, d).
-        self.m = self.m_init.view(1, 1, -1).expand(batch_size, seq_len, -1).contiguous()
+        return self.m_init.view(1, 1, -1).expand(batch_size, seq_len, -1).contiguous()
 
     def forward(
         self,
         h_prev: torch.Tensor,
         y: torch.Tensor,
+        m: torch.Tensor,
         layer_idx: int,
         sublayer: int = 0,
-    ) -> torch.Tensor:
-        """Performs one gated residual update and memory transition."""
-        m = self.m
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Compute recurrent residual update.
 
-        # 1. Read Mechanism: Generate reset signal from normalized hidden state.
+        Args:
+            h_prev: Previous hidden state ``(B, S, d_model)``.
+            y: Sublayer output ``(B, S, d_model)``.
+            m: Current memory state ``(B, S, d_model)``.
+            layer_idx: Zero-based layer index.
+            sublayer: 0 for Attn, 1 for FFN.
+
+        Returns:
+            Tuple of (updated hidden state, updated memory state).
+        """
+        # ── Reset gate ────────────────────────────────────────────────────
         h_norm_pre = F.layer_norm(h_prev, (self.d_model,))
         r = torch.sigmoid(self.gate_r(h_norm_pre))
 
-        # 2. Injection: Merge projected memory into the hidden path.
+        # ── Memory injection ──────────────────────────────────────────────
         m_inj = self.proj_m(self.norm_m(m))
 
-        # 3. DeepNorm Residual Update: Final Post-LN stabilization.
+        # ── Residual update (DeepNorm) ───────────────────────────────────
         h_combined = self.alpha * h_prev + y + r * m_inj
         h_new = F.layer_norm(h_combined, (self.d_model,))
 
-        # 4. Write Mechanism: EMA update with depth-aware gating.
+        # ── Write gate & memory update ────────────────────────────────────
         sublayer_pos = layer_idx * 2 + sublayer
         depth_bias = self.depth_emb(
             torch.tensor(sublayer_pos, device=h_prev.device)
@@ -138,6 +159,5 @@ class RecurrentResidualCell(nn.Module):
         alpha = torch.sigmoid(self.gate_alpha(y) + depth_bias)
         
         m_new = alpha * y + (1.0 - alpha) * m
-        self.m = m_new
 
-        return h_new
+        return h_new, m_new

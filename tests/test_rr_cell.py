@@ -29,11 +29,11 @@ class TestRRCellInit:
 
     def test_deepnorm_at_init(self, cell, B, S, d_model):
         """h_new ≈ LN(alpha * h_prev + y) when gates are closed at init."""
-        cell.reset_memory(B, S)
+        m = cell.get_initial_state(B, S)
         h_prev = torch.randn(B, S, d_model)
         y = torch.randn(B, S, d_model)
 
-        h_new = cell(h_prev, y, layer_idx=0, sublayer=0)
+        h_new, m_new = cell(h_prev, y, m, layer_idx=0, sublayer=0)
         
         # At init: r ≈ 0, proj_m ≈ 0.  So h_new ≈ LN(alpha * h_prev + y)
         expected = F.layer_norm(cell.alpha * h_prev + y, (d_model,))
@@ -45,11 +45,11 @@ class TestRRCellInit:
         assert isinstance(cell.m_init, torch.nn.Parameter)
         assert cell.m_init.abs().max() == 0.0
         
-        # Changing m_init should change the reset value.
+        # Changing m_init should change the initial state.
         with torch.no_grad():
             cell.m_init.fill_(1.0)
-        cell.reset_memory(B, S)
-        assert cell.m.abs().min() == 1.0
+        m = cell.get_initial_state(B, S)
+        assert m.abs().min() == 1.0
 
 
 class TestRRCellMemoryUpdate:
@@ -57,13 +57,11 @@ class TestRRCellMemoryUpdate:
 
     def test_memory_ema_equation(self, cell, B, S, d_model):
         """Manually verify m_new = alpha * y + (1-alpha) * m_prev."""
-        cell.reset_memory(B, S)
+        m_before = cell.get_initial_state(B, S)
         h_prev = torch.randn(B, S, d_model)
         y = torch.randn(B, S, d_model)
-        m_before = cell.m.clone()
 
-        cell(h_prev, y, layer_idx=0, sublayer=0)
-        m_after = cell.m.clone()
+        _, m_after = cell(h_prev, y, m_before, layer_idx=0, sublayer=0)
 
         # Recompute alpha manually.
         depth_pos = torch.tensor(0)  # layer=0, sublayer=0 → pos=0
@@ -74,16 +72,14 @@ class TestRRCellMemoryUpdate:
 
     def test_memory_accumulates_across_layers(self, cell, B, S, d_model):
         """Memory should be non-zero after at least one forward pass."""
-        cell.reset_memory(B, S)
-        # Ensure m_init is zero for this test.
         with torch.no_grad():
             cell.m_init.zero_()
-        cell.reset_memory(B, S)
+        m = cell.get_initial_state(B, S)
 
         y = torch.randn(B, S, d_model)
-        cell(torch.zeros(B, S, d_model), y, layer_idx=0, sublayer=0)
+        _, m_after = cell(torch.zeros(B, S, d_model), y, m, layer_idx=0, sublayer=0)
 
-        assert cell.m.abs().sum() > 0.0, "Memory should be non-zero after write."
+        assert m_after.abs().sum() > 0.0, "Memory should be non-zero after write."
 
 
 class TestRRCellDepthEmbedding:
@@ -111,11 +107,11 @@ class TestRRCellGradients:
 
     def test_grad_flows_through_h_new(self, cell, B, S, d_model):
         """h_new must be part of the autograd graph."""
-        cell.reset_memory(B, S)
+        m = cell.get_initial_state(B, S)
         h_prev = torch.randn(B, S, d_model, requires_grad=True)
         y = torch.randn(B, S, d_model, requires_grad=True)
 
-        h_new = cell(h_prev, y, layer_idx=0, sublayer=0)
+        h_new, _ = cell(h_prev, y, m, layer_idx=0, sublayer=0)
         h_new.sum().backward()
 
         assert h_prev.grad is not None
@@ -123,14 +119,14 @@ class TestRRCellGradients:
 
     def test_gate_params_receive_grad(self, cell, B, S, d_model):
         """gate_r and gate_alpha parameters must receive gradient signal."""
-        cell.reset_memory(B, S)
+        m_0 = cell.get_initial_state(B, S)
         h_prev = torch.randn(B, S, d_model)
         y = torch.randn(B, S, d_model)
 
         # Run step 1: writes to memory via gate_alpha
-        h_mid = cell(h_prev, y, layer_idx=0, sublayer=0)
+        h_mid, m_1 = cell(h_prev, y, m_0, layer_idx=0, sublayer=0)
         # Run step 2: reads from memory via gate_r and proj_m
-        h_new = cell(h_mid, y, layer_idx=0, sublayer=1)
+        h_new, m_2 = cell(h_mid, y, m_1, layer_idx=0, sublayer=1)
         h_new.sum().backward()
 
         assert cell.gate_r.weight.grad is not None
@@ -138,18 +134,18 @@ class TestRRCellGradients:
 
 
 class TestRRCellReset:
-    """Memory reset behaviour."""
+    """Memory initialization behaviour."""
 
-    def test_reset_uses_m_init(self, cell, B, S, d_model):
-        """reset_memory must produce memory tensor expanded from m_init."""
+    def test_get_initial_state_uses_m_init(self, cell, B, S, d_model):
+        """get_initial_state must produce memory tensor expanded from m_init."""
         with torch.no_grad():
             cell.m_init.normal_()
         expected = cell.m_init.view(1, 1, -1).expand(B, S, -1)
         
-        cell.reset_memory(B, S)
-        assert_close(cell.m, expected)
+        m = cell.get_initial_state(B, S)
+        assert_close(m, expected)
 
-    def test_reset_changes_shape(self, cell, d_model):
-        """reset_memory must resize m to the new (B, S) shape."""
-        cell.reset_memory(batch_size=4, seq_len=16)
-        assert cell.m.shape == (4, 16, d_model)
+    def test_initial_state_shape(self, cell, d_model):
+        """get_initial_state must produce the new (B, S) shape."""
+        m = cell.get_initial_state(batch_size=4, seq_len=16)
+        assert m.shape == (4, 16, d_model)

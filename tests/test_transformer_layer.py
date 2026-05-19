@@ -20,20 +20,21 @@ class TestTransformerLayerStandard:
     def test_output_shape(self, standard_cfg, B, S, d_model):
         layer = TransformerLayer(standard_cfg)
         x = torch.randn(B, S, d_model)
-        out = layer(x, layer_idx=0)
-        assert out.shape == (B, S, d_model)
+        h_out, _ = layer(x, layer_idx=0)
+        assert h_out.shape == (B, S, d_model)
 
     def test_residual_is_not_identity(self, standard_cfg, B, S, d_model):
         """Output should differ from input (non-trivial transformation)."""
         layer = TransformerLayer(standard_cfg)
         x = torch.randn(B, S, d_model)
-        out = layer(x, layer_idx=0)
-        assert not torch.allclose(out, x), "Layer output must not equal input."
+        h_out, _ = layer(x, layer_idx=0)
+        assert not torch.allclose(h_out, x), "Layer output must not equal input."
 
     def test_grad_flows(self, standard_cfg, B, S, d_model):
         layer = TransformerLayer(standard_cfg)
         x = torch.randn(B, S, d_model, requires_grad=True)
-        layer(x, layer_idx=0).sum().backward()
+        h_out, _ = layer(x, layer_idx=0)
+        h_out.sum().backward()
         assert x.grad is not None
 
     def test_raises_if_forward_attnres_called(self, standard_cfg, B, S, d_model):
@@ -108,38 +109,42 @@ class TestTransformerLayerAttnRes:
 class TestTransformerLayerRR:
     """Recurrent Residual mode."""
 
-    def test_forward_requires_rr_cell(self, rr_cfg, B, S, d_model):
-        """forward() must raise AssertionError if rr_cell is not provided."""
+    def test_forward_requires_m(self, rr_cfg, B, S, d_model):
+        """forward() must raise AssertionError if m is not provided."""
         layer = TransformerLayer(rr_cfg)
         x = torch.randn(B, S, d_model)
-        with pytest.raises(AssertionError, match="rr_cell required"):
+        with pytest.raises(AssertionError, match="Memory state m is required"):
             layer(x, layer_idx=0)
 
-    def test_forward_with_shared_cell(self, rr_cfg, B, S, d_model):
-        """Verify layer can use a shared RecurrentResidualCell."""
+    def test_forward_with_memory_flow(self, rr_cfg, B, S, d_model):
+        """Verify layer passes and updates memory state m."""
         from src.modules.recurrent_residual import RecurrentResidualCell
         
         layer = TransformerLayer(rr_cfg)
+        # Use the cell to get initial state
         rr_cell = RecurrentResidualCell(d_model, rr_cfg.num_layers)
-        rr_cell.reset_memory(B, S)
+        m_in = rr_cell.get_initial_state(B, S)
         
         x = torch.randn(B, S, d_model)
-        out = layer(x, layer_idx=0, rr_cell=rr_cell)
+        h_out, m_out = layer(x, layer_idx=0, m=m_in)
         
-        assert out.shape == (B, S, d_model)
-        assert not torch.allclose(out, x)
+        assert h_out.shape == (B, S, d_model)
+        assert m_out is not None
+        assert m_out.shape == (B, S, d_model)
+        assert not torch.allclose(h_out, x)
 
     def test_grad_flows_through_rr_path(self, rr_cfg, B, S, d_model):
         from src.modules.recurrent_residual import RecurrentResidualCell
         
         layer = TransformerLayer(rr_cfg)
         rr_cell = RecurrentResidualCell(d_model, rr_cfg.num_layers)
-        rr_cell.reset_memory(B, S)
+        m_in = rr_cell.get_initial_state(B, S)
         
         x = torch.randn(B, S, d_model, requires_grad=True)
-        out = layer(x, layer_idx=0, rr_cell=rr_cell)
-        out.sum().backward()
+        h_out, m_out = layer(x, layer_idx=0, m=m_in)
+        h_out.sum().backward()
         
         assert x.grad is not None
-        assert rr_cell.gate_r.weight.grad is not None
-
+        # Since layer.rr_cell was instantiated in __init__ (default), 
+        # it should have gradients.
+        assert layer.rr_cell.gate_r.weight.grad is not None
