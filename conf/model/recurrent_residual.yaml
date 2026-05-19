@@ -1,11 +1,12 @@
 # conf/model/recurrent_residual.yaml — gated-memory residual transformer
-# @package _global_
-model:
-  residual_mode: "recurrent_residual"
-  recurrent_residual:
-    gate_r_bias: -3.0     # Initial bias for read (reset) gate
-    gate_alpha_bias: -2.0 # Initial bias for write (update) gate
-    eps: 1e-5             # Epsilon for normalisation
+# @package model
+
+residual_mode: recurrent_residual
+
+recurrent_residual:
+  gate_r_bias: -3.0      # Initial bias for read (reset) gate
+  gate_alpha_bias: -2.0  # Initial bias for write (update) gate
+  eps: 1e-5              # Epsilon for normalisation
 
 d_model: 768
 n_heads: 12
@@ -14,4 +15,3 @@ num_layers: 12
 max_seq_len: 1024
 vocab_size: 50257
 dropout: 0.1
-
