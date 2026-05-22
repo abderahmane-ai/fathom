@@ -1,4 +1,5 @@
 """Lightning runner shared by Modal benchmark scripts."""
+
 from __future__ import annotations
 
 import logging

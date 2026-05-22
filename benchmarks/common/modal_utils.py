@@ -1,4 +1,5 @@
 """Modal helper functions shared by benchmark entrypoints."""
+
 from __future__ import annotations
 
 import json
@@ -61,4 +62,3 @@ def write_spawn_manifest(
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     return path
-

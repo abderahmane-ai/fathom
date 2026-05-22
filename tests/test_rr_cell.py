@@ -1,4 +1,5 @@
 """Unit tests for the Recurrent Residual cell."""
+
 from __future__ import annotations
 
 import pytest
@@ -41,8 +42,10 @@ class TestRRCellInit:
         assert parameter_shapes["read_weight"] == (cell.d_model,)
         assert parameter_shapes["update_weight"] == (cell.d_model,)
         assert parameter_shapes["memory_gain"] == (cell.d_model,)
-        assert all("weight" not in name or shape != (cell.d_model, cell.d_model)
-                   for name, shape in parameter_shapes.items())
+        assert all(
+            "weight" not in name or shape != (cell.d_model, cell.d_model)
+            for name, shape in parameter_shapes.items()
+        )
 
     def test_m_init_is_learnable(self, cell, B, S):
         """m_init should be a learnable parameter initialized to zero."""
@@ -66,9 +69,7 @@ class TestRRCellMemoryUpdate:
 
         _, m_after = cell(h_prev, y, m_before, layer_idx=0, sublayer=0)
 
-        update_gate = torch.sigmoid(
-            cell.update_weight * y + cell.update_bias + cell.depth_bias[0]
-        )
+        update_gate = torch.sigmoid(cell.update_weight * y + cell.update_bias + cell.depth_bias[0])
         expected_m = update_gate * y + (1.0 - update_gate) * m_before
         assert_close(m_after, expected_m, atol=1e-6, rtol=1e-6)
 

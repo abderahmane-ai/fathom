@@ -18,6 +18,8 @@ dependencies = [
     "pyarrow>=15.0.0",
     "transformers>=4.39.0",   # tokenizer only
     "einops",
+    "jaxtyping>=0.2.28",
+    "beartype>=0.17.2",
 ]
 
 [project.optional-dependencies]
@@ -48,6 +50,7 @@ ignore = [
     "N803",    # pytest fixture arguments use established short aliases
     "N806",    # tensor-shape aliases such as B/S are conventional here
     "N812",    # common torch/lightning aliases are clearer locally
+    "F722",    # jaxtyping shape annotations are not valid python type syntax
 ]
 
 [tool.ruff.lint.per-file-ignores]

@@ -6,6 +6,7 @@ Validates:
 * AttnRes mode: blocks list grows at correct boundary.
 * Calling wrong forward method raises ValueError.
 """
+
 from __future__ import annotations
 
 import pytest

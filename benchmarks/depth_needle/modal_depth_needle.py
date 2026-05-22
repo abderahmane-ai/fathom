@@ -1,4 +1,5 @@
 """Modal entrypoint for the depth needle benchmark."""
+
 from __future__ import annotations
 
 import logging

@@ -1,4 +1,5 @@
 """Filesystem helpers for benchmark artifacts and status files."""
+
 from __future__ import annotations
 
 import json
@@ -241,4 +242,3 @@ def commit_modal_volume(volume_name: str | None = None) -> None:
         modal.Volume.from_name(name).commit()
     except Exception:
         log.exception("Modal volume commit failed for %s", name)
-

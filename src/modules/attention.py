@@ -3,6 +3,7 @@
 Utilizes ``torch.nn.functional.scaled_dot_product_attention`` for efficient
 memory utilization (O(S) instead of O(S²)) and native causal masking.
 """
+
 from __future__ import annotations
 
 import torch
@@ -47,7 +48,9 @@ class Attention(nn.Module):
         # Flash / memory-efficient scaled dot-product attention with causal mask.
         dropout_p = self.attn_dropout if self.training else 0.0
         attn_out = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v,
+            q,
+            k,
+            v,
             dropout_p=dropout_p,
             is_causal=True,
         )

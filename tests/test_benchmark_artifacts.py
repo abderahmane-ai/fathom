@@ -1,4 +1,5 @@
 """Tests for benchmark configs, paths, docs, and Modal entrypoints."""
+
 from __future__ import annotations
 
 import importlib

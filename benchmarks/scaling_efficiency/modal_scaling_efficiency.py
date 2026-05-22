@@ -1,4 +1,5 @@
 """Modal entrypoint for the scaling efficiency benchmark."""
+
 from __future__ import annotations
 
 import logging

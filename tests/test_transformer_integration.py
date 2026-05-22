@@ -1,4 +1,5 @@
 """Integration tests for TransformerDecoder across different residual modes."""
+
 import pytest
 import torch
 from omegaconf import OmegaConf
@@ -8,24 +9,26 @@ from src.modules.transformer import TransformerDecoder
 
 @pytest.fixture
 def base_config():
-    return OmegaConf.create({
-        "d_model": 128,
-        "n_heads": 4,
-        "ff_dim": 512,
-        "num_layers": 4,
-        "max_seq_len": 64,
-        "vocab_size": 1000,
-        "dropout": 0.1,
-        "residual_mode": "standard",
-        "recurrent_residual": {
-            "read_gate_bias": -3.0,
-            "update_gate_bias": -2.0,
-            "gate_init_std": 0.01,
-            "memory_gain_init": 0.0,
-            "eps": 1e-5
-        },
-        "full_attnres": {"max_layers": 24},
-    })
+    return OmegaConf.create(
+        {
+            "d_model": 128,
+            "n_heads": 4,
+            "ff_dim": 512,
+            "num_layers": 4,
+            "max_seq_len": 64,
+            "vocab_size": 1000,
+            "dropout": 0.1,
+            "residual_mode": "standard",
+            "recurrent_residual": {
+                "read_gate_bias": -3.0,
+                "update_gate_bias": -2.0,
+                "gate_init_std": 0.01,
+                "memory_gain_init": 0.0,
+                "eps": 1e-5,
+            },
+            "full_attnres": {"max_layers": 24},
+        }
+    )
 
 
 @pytest.mark.parametrize(
@@ -60,7 +63,7 @@ def test_recurrent_residual_memory_persistence(base_config):
         "update_gate_bias": -2.0,
         "gate_init_std": 0.01,
         "memory_gain_init": 0.0,
-        "eps": 1e-5
+        "eps": 1e-5,
     }
 
     model = TransformerDecoder(config)

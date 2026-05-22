@@ -6,12 +6,15 @@ Supported Modes:
 *   ``block_attnres``: Block-wise attention residuals for sparse cross-depth retrieval.
 *   ``full_attnres``: Small diagnostic full-depth attention residuals.
 """
+
 from __future__ import annotations
 
 from typing import Any, cast
 
 import torch
 import torch.nn as nn
+from beartype import beartype
+from jaxtyping import Float, Int, jaxtyped
 
 from .recurrent_residual import RecurrentResidualCell
 from .transformer_layer import TransformerLayer
@@ -77,10 +80,7 @@ class TransformerDecoder(nn.Module):
                 )
 
         self.layers: nn.ModuleList = nn.ModuleList(
-            [
-                TransformerLayer(config, rr_cell=self.rr_cell)
-                for _ in range(config.num_layers)
-            ]
+            [TransformerLayer(config, rr_cell=self.rr_cell) for _ in range(config.num_layers)]
         )
 
         self.ln_f = nn.LayerNorm(config.d_model)
@@ -126,7 +126,10 @@ class TransformerDecoder(nn.Module):
     # Forward
     # ------------------------------------------------------------------
 
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+    @jaxtyped(typechecker=beartype)
+    def forward(
+        self, input_ids: Int[torch.Tensor, "batch seq"]
+    ) -> Float[torch.Tensor, "batch seq vocab_size"]:
         """Compute next-token prediction logits.
 
         Args:
@@ -162,9 +165,7 @@ class TransformerDecoder(nn.Module):
             partial_block: torch.Tensor = h
             for idx, layer in enumerate(self.layers):
                 layer_typed = cast(TransformerLayer, layer)
-                blocks, partial_block = layer_typed.forward_attnres(
-                    blocks, partial_block, idx
-                )
+                blocks, partial_block = layer_typed.forward_attnres(blocks, partial_block, idx)
             h = partial_block
 
         elif self.residual_mode == "full_attnres":

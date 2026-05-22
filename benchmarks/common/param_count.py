@@ -1,4 +1,5 @@
 """Parameter counting and benchmark size guards."""
+
 from __future__ import annotations
 
 from omegaconf import DictConfig
@@ -35,8 +36,5 @@ def assert_model_under_cap(model_cfg: DictConfig, max_params: int) -> int:
     model = TransformerDecoder(model_cfg)
     params = count_parameters(model)
     if params > max_params:
-        raise ValueError(
-            f"Model has {params:,} parameters, exceeding cap of {max_params:,}."
-        )
+        raise ValueError(f"Model has {params:,} parameters, exceeding cap of {max_params:,}.")
     return params
-

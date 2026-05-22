@@ -5,6 +5,7 @@ Validates:
 * Flash Attention compatibility.
 * Single-token sequence (S=1) doesn't produce NaN.
 """
+
 from __future__ import annotations
 
 import torch

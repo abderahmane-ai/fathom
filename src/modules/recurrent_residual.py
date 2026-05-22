@@ -5,11 +5,14 @@ gates, an RMS-normalized memory read path, and an EMA memory update across
 depth. At initialization the memory injection path is zero, so the hidden-state
 update matches a standard Pre-LN residual addition.
 """
+
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from beartype import beartype
+from jaxtyping import Float, jaxtyped
 
 
 class RMSNorm(nn.Module):
@@ -25,7 +28,10 @@ class RMSNorm(nn.Module):
         self.d_model = d_model
         self.eps = eps
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    @jaxtyped(typechecker=beartype)
+    def forward(
+        self, x: Float[torch.Tensor, "*batch d_model"]
+    ) -> Float[torch.Tensor, "*batch d_model"]:
         """Normalize ``x`` by its RMS over the final dimension.
 
         Args:
@@ -96,12 +102,13 @@ class RecurrentResidualCell(nn.Module):
         """
         return (self.num_sublayers + 6) * self.d_model
 
+    @jaxtyped(typechecker=beartype)
     def get_initial_state(
         self,
         batch_size: int,
         seq_len: int,
         device: torch.device | None = None,
-    ) -> torch.Tensor:
+    ) -> Float[torch.Tensor, "batch seq d_model"]:
         """Return the expanded learnable initial memory state.
 
         Args:
@@ -132,19 +139,18 @@ class RecurrentResidualCell(nn.Module):
             raise ValueError(f"sublayer must be 0 or 1, got {sublayer}.")
         position = layer_idx * 2 + sublayer
         if position >= self.num_sublayers:
-            raise IndexError(
-                f"sublayer position {position} exceeds {self.num_sublayers} entries."
-            )
+            raise IndexError(f"sublayer position {position} exceeds {self.num_sublayers} entries.")
         return position
 
+    @jaxtyped(typechecker=beartype)
     def forward(
         self,
-        h_prev: torch.Tensor,
-        y: torch.Tensor,
-        m: torch.Tensor,
+        h_prev: Float[torch.Tensor, "batch seq d_model"],
+        y: Float[torch.Tensor, "batch seq d_model"],
+        m: Float[torch.Tensor, "batch seq d_model"],
         layer_idx: int,
         sublayer: int = 0,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[Float[torch.Tensor, "batch seq d_model"], Float[torch.Tensor, "batch seq d_model"]]:
         """Compute one recurrent residual transition.
 
         Args:

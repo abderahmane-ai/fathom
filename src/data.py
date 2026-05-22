@@ -4,6 +4,7 @@ Wraps HuggingFace ``datasets`` in a ``LightningDataModule`` that implements
 efficient token packing. This ensures that every training batch is fully
 utilized (no padding tokens), maximizing compute throughput.
 """
+
 from __future__ import annotations
 
 import hashlib

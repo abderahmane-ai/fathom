@@ -1,4 +1,5 @@
 """Modal entrypoint for the Depth Preservation Score (DPS) benchmark."""
+
 from __future__ import annotations
 
 import json
@@ -71,11 +72,11 @@ def _run_dps_evaluation(cfg: DictConfig, residual_mode: str, run_id: str) -> Non
 
     # Initialize Data
     datamodule = LanguageModelDataModule(cfg.data)
-    datamodule.setup(stage="fit") # Prepare datasets
+    datamodule.setup(stage="fit")  # Prepare datasets
     dataloader = datamodule.val_dataloader()
 
     L = cfg.model.num_layers
-    target_layers = list(range(1, L)) # Layers 1 to L-1
+    target_layers = list(range(1, L))  # Layers 1 to L-1
     n_target_tokens = int(cfg.benchmark.get("n_tokens", 100000))
     lambda_val = float(cfg.benchmark.get("lambda_val", 1.0))
     final_norm_name = str(cfg.benchmark.get("final_norm_name", "norm"))
@@ -84,7 +85,7 @@ def _run_dps_evaluation(cfg: DictConfig, residual_mode: str, run_id: str) -> Non
 
     with torch.no_grad():
         for k in target_layers:
-            log.info(f"Evaluating DPS for layer {k} / {L-1}")
+            log.info(f"Evaluating DPS for layer {k} / {L - 1}")
             evaluator = DPSEvaluator(model, layer_idx=k, final_norm_name=final_norm_name)
 
             tokens_processed = 0
@@ -111,7 +112,7 @@ def _run_dps_evaluation(cfg: DictConfig, residual_mode: str, run_id: str) -> Non
                 xty=res["xty"],
                 yty=res["yty"],
                 target_variance=res["target_variance"],
-                lambda_val=lambda_val
+                lambda_val=lambda_val,
             )
             dps_scores.append(dps)
             log.info(f"Layer {k} DPS: {dps:.4f} (Dissim: {res['mean_dissim']:.4f})")
@@ -128,7 +129,7 @@ def _run_dps_evaluation(cfg: DictConfig, residual_mode: str, run_id: str) -> Non
         "run_id": run_id,
         "dps_scores": dps_scores,
         "dri": dri,
-        "n_tokens": n_target_tokens
+        "n_tokens": n_target_tokens,
     }
 
     with open(output_dir / f"{residual_mode}_dps.json", "w") as f:

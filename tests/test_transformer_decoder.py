@@ -5,6 +5,7 @@ Validates:
 * Global memory flow in Recurrent Residual mode.
 * Weight tying between embeddings and LM head.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -16,25 +17,27 @@ from src.modules.transformer import TransformerDecoder
 
 @pytest.fixture
 def config():
-    return DictConfig({
-        "d_model": 64,
-        "n_heads": 4,
-        "ff_dim": 128,
-        "num_layers": 4,
-        "max_seq_len": 32,
-        "vocab_size": 100,
-        "dropout": 0.0,
-        "residual_mode": "standard",
-        "attnres_block": {"block_size": 4},
-        "recurrent_residual": {
-            "read_gate_bias": -3.0,
-            "update_gate_bias": -2.0,
-            "gate_init_std": 0.01,
-            "memory_gain_init": 0.0,
-            "eps": 1e-5,
-        },
-        "full_attnres": {"max_layers": 24},
-    })
+    return DictConfig(
+        {
+            "d_model": 64,
+            "n_heads": 4,
+            "ff_dim": 128,
+            "num_layers": 4,
+            "max_seq_len": 32,
+            "vocab_size": 100,
+            "dropout": 0.0,
+            "residual_mode": "standard",
+            "attnres_block": {"block_size": 4},
+            "recurrent_residual": {
+                "read_gate_bias": -3.0,
+                "update_gate_bias": -2.0,
+                "gate_init_std": 0.01,
+                "memory_gain_init": 0.0,
+                "eps": 1e-5,
+            },
+            "full_attnres": {"max_layers": 24},
+        }
+    )
 
 
 def test_transformer_decoder_shapes(config):
@@ -69,6 +72,7 @@ def test_recurrent_residual_memory_flow(config):
 
     # We'll patch the TransformerLayer forward to check for m
     from unittest.mock import MagicMock
+
     original_layer_forwards = []
     for layer in model.layers:
         original_layer_forwards.append(layer.forward)

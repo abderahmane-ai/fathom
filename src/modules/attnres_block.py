@@ -6,6 +6,7 @@ These modules implement depth-wise aggregation over previous hidden states.
 ``BlockAttnRes`` is the practical benchmark target; ``FullAttnRes`` is kept as
 small-model diagnostic reference because it stores every previous state.
 """
+
 from __future__ import annotations
 
 import torch

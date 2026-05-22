@@ -7,6 +7,7 @@ Validates:
 * Raises on empty blocks list.
 * RMSNorm scale is learnable and changes logits after manual update.
 """
+
 from __future__ import annotations
 
 import pytest

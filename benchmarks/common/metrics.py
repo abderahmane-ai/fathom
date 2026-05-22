@@ -1,4 +1,5 @@
 """Metric helpers for benchmark runs."""
+
 from __future__ import annotations
 
 import json
@@ -102,7 +103,7 @@ def compute_dps_closed_form(
 
     # Add ridge penalty to the diagonal (excluding the bias term at the end)
     reg_matrix = torch.eye(d + 1, device=xtx.device, dtype=xtx.dtype)
-    reg_matrix[-1, -1] = 0.0 # Do not penalize the bias
+    reg_matrix[-1, -1] = 0.0  # Do not penalize the bias
 
     # Solve for W_tilde = [W; b]
     # W_tilde = (X^T X + lambda I)^{-1} X^T Y
@@ -150,5 +151,3 @@ def calculate_dri(dps_scores: list[float]) -> float:
     dri = sum(first_half_scores) / len(first_half_scores)
 
     return dri
-
-

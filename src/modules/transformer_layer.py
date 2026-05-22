@@ -8,12 +8,15 @@ Supported Architectures:
     Implements cross-block aggregation where sublayers attend to previous
     block states stored in a shared list.
 """
+
 from __future__ import annotations
 
 from typing import Any
 
 import torch
 import torch.nn as nn
+from beartype import beartype
+from jaxtyping import Float, jaxtyped
 
 from .attention import Attention
 from .ffn import FeedForward
@@ -77,12 +80,15 @@ class TransformerLayer(nn.Module):
     # Standard / RecurrentResidual forward
     # ------------------------------------------------------------------
 
+    @jaxtyped(typechecker=beartype)
     def forward(
         self,
-        x: torch.Tensor,
+        x: Float[torch.Tensor, "batch seq d_model"],
         layer_idx: int,
-        m: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        m: Float[torch.Tensor, "batch seq d_model"] | None = None,
+    ) -> tuple[
+        Float[torch.Tensor, "batch seq d_model"], Float[torch.Tensor, "batch seq d_model"] | None
+    ]:
         """Forward pass for ``standard`` and ``recurrent_residual`` modes.
 
         Args:
@@ -94,9 +100,7 @@ class TransformerLayer(nn.Module):
             Tuple of (updated hidden state, updated memory state).
         """
         if self.residual_mode in {"block_attnres", "full_attnres"}:
-            raise ValueError(
-                "Use the Attention Residual forward path for this residual mode."
-            )
+            raise ValueError("Use the Attention Residual forward path for this residual mode.")
 
         # ── Attention sublayer ────────────────────────────────────────────
         y_attn = self.attn(self.ln_1(x))
@@ -120,12 +124,15 @@ class TransformerLayer(nn.Module):
 
         return h_new, m_new
 
+    @jaxtyped(typechecker=beartype)
     def forward_attnres(
         self,
-        blocks: list[torch.Tensor],
-        partial_block: torch.Tensor,
+        blocks: list[Float[torch.Tensor, "batch seq d_model"]],
+        partial_block: Float[torch.Tensor, "batch seq d_model"],
         layer_idx: int,
-    ) -> tuple[list[torch.Tensor], torch.Tensor]:
+    ) -> tuple[
+        list[Float[torch.Tensor, "batch seq d_model"]], Float[torch.Tensor, "batch seq d_model"]
+    ]:
         """Forward pass for sparse block-wise attention residuals.
 
         Args:
@@ -151,11 +158,14 @@ class TransformerLayer(nn.Module):
 
         return blocks, partial_block
 
+    @jaxtyped(typechecker=beartype)
     def forward_full_attnres(
         self,
-        history: list[torch.Tensor],
-        x: torch.Tensor,
-    ) -> tuple[list[torch.Tensor], torch.Tensor]:
+        history: list[Float[torch.Tensor, "batch seq d_model"]],
+        x: Float[torch.Tensor, "batch seq d_model"],
+    ) -> tuple[
+        list[Float[torch.Tensor, "batch seq d_model"]], Float[torch.Tensor, "batch seq d_model"]
+    ]:
         """Forward pass for diagnostic full Attention Residuals.
 
         Args:

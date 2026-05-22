@@ -1,4 +1,5 @@
 """Extractor for Depth Preservation Score (DPS) using streaming covariance."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -14,6 +15,7 @@ class DPSEvaluator:
     a specific intermediate layer (target) and the final post-LayerNorm state (source).
     It accumulates the cross-products necessary for Ridge Regression incrementally.
     """
+
     def __init__(self, model: nn.Module, layer_idx: int, final_norm_name: str = "norm") -> None:
         """Initialize the evaluator for a specific layer.
 
@@ -55,23 +57,23 @@ class DPSEvaluator:
         # Assuming typical structure: model.decoder.layers or model.layers
 
         target_module = None
-        if hasattr(self.model, 'decoder') and hasattr(self.model.decoder, 'layers'):
+        if hasattr(self.model, "decoder") and hasattr(self.model.decoder, "layers"):
             target_module = self.model.decoder.layers[self.layer_idx]
-        elif hasattr(self.model, 'layers'):
+        elif hasattr(self.model, "layers"):
             target_module = self.model.layers[self.layer_idx]
         else:
             raise ValueError("Could not find layers list in model.")
 
         final_norm_module = None
-        if hasattr(self.model, 'decoder') and hasattr(self.model.decoder, final_norm_name):
+        if hasattr(self.model, "decoder") and hasattr(self.model.decoder, final_norm_name):
             final_norm_module = getattr(self.model.decoder, final_norm_name)
         elif hasattr(self.model, final_norm_name):
             final_norm_module = getattr(self.model, final_norm_name)
         else:
             # Fallback to the last layer's output if no final norm exists
-            if hasattr(self.model, 'decoder') and hasattr(self.model.decoder, 'layers'):
+            if hasattr(self.model, "decoder") and hasattr(self.model.decoder, "layers"):
                 final_norm_module = self.model.decoder.layers[-1]
-            elif hasattr(self.model, 'layers'):
+            elif hasattr(self.model, "layers"):
                 final_norm_module = self.model.layers[-1]
             else:
                 raise ValueError(f"Could not find final norm '{final_norm_name}' or last layer.")
@@ -130,7 +132,7 @@ class DPSEvaluator:
         mean = target.mean(dim=-1, keepdim=True)
         var = target.var(dim=-1, unbiased=False, keepdim=True)
         eps = 1e-5
-        y = (target - mean) / torch.sqrt(var + eps) # This is a_k
+        y = (target - mean) / torch.sqrt(var + eps)  # This is a_k
 
         # 2. Augment source with ones to get X_tilde
         ones = torch.ones((batch_n, 1), device=device, dtype=source.dtype)
@@ -141,7 +143,7 @@ class DPSEvaluator:
         self.xty += x_tilde.T @ y
 
         # Tr(Y^T Y) is simply the sum of all squared elements in Y
-        self.yty += torch.sum(y ** 2)
+        self.yty += torch.sum(y**2)
 
         # 4. Update variance accumulators for Y
         self.sum_y += torch.sum(y, dim=0)
@@ -167,7 +169,7 @@ class DPSEvaluator:
         mean_y = self.sum_y / self.n_tokens
         # The sum of squared norms of y_i is exactly self.yty
         # The correction term is N * ||mean_y||^2
-        correction = self.n_tokens * torch.sum(mean_y ** 2)
+        correction = self.n_tokens * torch.sum(mean_y**2)
         target_variance = self.yty - correction
 
         return {
@@ -176,6 +178,5 @@ class DPSEvaluator:
             "yty": self.yty,
             "target_variance": target_variance,
             "mean_dissim": self.sum_cos_dissim / self.n_tokens,
-            "n_tokens": self.n_tokens
+            "n_tokens": self.n_tokens,
         }
-

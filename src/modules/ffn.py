@@ -4,6 +4,7 @@ Implements a standard two-layer projection with GELU activation and dropout.
 Following GPT-2 conventions, dropout is applied post-activation but
 pre-projection to maintain residual branch variance.
 """
+
 from __future__ import annotations
 
 import torch

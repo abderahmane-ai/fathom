@@ -1,4 +1,5 @@
 """Shared pytest fixtures for all test modules."""
+
 from __future__ import annotations
 
 import pytest
@@ -59,51 +60,57 @@ def num_layers() -> int:
 @pytest.fixture
 def standard_cfg(d_model, n_heads, ff_dim, num_layers):
     """Minimal OmegaConf config for standard residual mode."""
-    return OmegaConf.create({
-        "d_model": d_model,
-        "n_heads": n_heads,
-        "ff_dim": ff_dim,
-        "num_layers": num_layers,
-        "max_seq_len": 32,
-        "vocab_size": 256,
-        "dropout": 0.0,
-        "residual_mode": "standard",
-    })
+    return OmegaConf.create(
+        {
+            "d_model": d_model,
+            "n_heads": n_heads,
+            "ff_dim": ff_dim,
+            "num_layers": num_layers,
+            "max_seq_len": 32,
+            "vocab_size": 256,
+            "dropout": 0.0,
+            "residual_mode": "standard",
+        }
+    )
 
 
 @pytest.fixture
 def attnres_cfg(d_model, n_heads, ff_dim, num_layers):
     """Minimal OmegaConf config for block_attnres mode with 2 layers per block."""
-    return OmegaConf.create({
-        "d_model": d_model,
-        "n_heads": n_heads,
-        "ff_dim": ff_dim,
-        "num_layers": num_layers,
-        "max_seq_len": 32,
-        "vocab_size": 256,
-        "dropout": 0.0,
-        "residual_mode": "block_attnres",
-        "attnres_block": {"block_size": 4},
-    })
+    return OmegaConf.create(
+        {
+            "d_model": d_model,
+            "n_heads": n_heads,
+            "ff_dim": ff_dim,
+            "num_layers": num_layers,
+            "max_seq_len": 32,
+            "vocab_size": 256,
+            "dropout": 0.0,
+            "residual_mode": "block_attnres",
+            "attnres_block": {"block_size": 4},
+        }
+    )
 
 
 @pytest.fixture
 def rr_cfg(d_model, n_heads, ff_dim, num_layers):
     """Minimal OmegaConf config for recurrent_residual mode."""
-    return OmegaConf.create({
-        "d_model": d_model,
-        "n_heads": n_heads,
-        "ff_dim": ff_dim,
-        "num_layers": num_layers,
-        "max_seq_len": 32,
-        "vocab_size": 256,
-        "dropout": 0.0,
-        "residual_mode": "recurrent_residual",
-        "recurrent_residual": {
-            "read_gate_bias": -3.0,
-            "update_gate_bias": -2.0,
-            "gate_init_std": 0.01,
-            "memory_gain_init": 0.0,
-            "eps": 1e-5,
-        },
-    })
+    return OmegaConf.create(
+        {
+            "d_model": d_model,
+            "n_heads": n_heads,
+            "ff_dim": ff_dim,
+            "num_layers": num_layers,
+            "max_seq_len": 32,
+            "vocab_size": 256,
+            "dropout": 0.0,
+            "residual_mode": "recurrent_residual",
+            "recurrent_residual": {
+                "read_gate_bias": -3.0,
+                "update_gate_bias": -2.0,
+                "gate_init_std": 0.01,
+                "memory_gain_init": 0.0,
+                "eps": 1e-5,
+            },
+        }
+    )
