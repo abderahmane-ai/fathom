@@ -64,5 +64,5 @@ benchmark:
   resume: true
 
 wandb:
-  enabled: true
+  enabled: false
   project: recurrent-residuals

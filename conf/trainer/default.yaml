@@ -13,7 +13,7 @@ strategy: auto
 num_nodes: 1
 
 logger:
-  name: wandb
+  name: tensorboard
   project: recurrent-residuals
   save_dir: logs
   offline: false
