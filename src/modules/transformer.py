@@ -3,11 +3,12 @@
 Supported Modes:
 *   ``standard``: Classic Pre-LN Transformer.
 *   ``recurrent_residual``: Global gated-memory state ('m') shared across depth.
-*   ``attnres_block``: Block-wise attention residuals for sparse cross-depth retrieval.
+*   ``block_attnres``: Block-wise attention residuals for sparse cross-depth retrieval.
+*   ``full_attnres``: Small diagnostic full-depth attention residuals.
 """
 from __future__ import annotations
 
-from typing import Any, Optional, cast
+from typing import Any, cast
 
 import torch
 import torch.nn as nn
@@ -28,8 +29,8 @@ class TransformerDecoder(nn.Module):
             - ``vocab_size``   (int):  Vocabulary size.
             - ``dropout``      (float): Embedding / output dropout.
             - ``residual_mode`` (str): ``"standard"`` | ``"recurrent_residual"``
-              | ``"attnres_block"``.
-            - ``attnres_block.block_size`` (int): Required for attnres_block mode.
+              | ``"block_attnres"`` | ``"attnres_block"`` | ``"full_attnres"``.
+            - ``attnres_block.block_size`` (int): Required for block_attnres mode.
             - ``recurrent_residual.gate_r_bias`` (float): Optional RR config.
             - ``recurrent_residual.gate_alpha_bias`` (float): Optional RR config.
     """
@@ -46,14 +47,14 @@ class TransformerDecoder(nn.Module):
         # ── Global Recurrent Cell (Shared across layers) ──────────────────
         if self.residual_mode == "recurrent_residual":
             from .recurrent_residual import RecurrentResidualCell
-            
+
             rr_cfg = getattr(config, "recurrent_residual", {})
             self.rr_cell = RecurrentResidualCell(
-                config.d_model, 
+                config.d_model,
                 config.num_layers,
                 gate_r_bias=getattr(rr_cfg, "gate_r_bias", -3.0),
                 gate_alpha_bias=getattr(rr_cfg, "gate_alpha_bias", -2.0),
-                eps=getattr(rr_cfg, "eps", 1e-5)
+                eps=getattr(rr_cfg, "eps", 1e-5),
             )
         else:
             self.rr_cell = None
@@ -90,7 +91,7 @@ class TransformerDecoder(nn.Module):
         """
         num_layers = len(self.layers)
         num_sublayers = num_layers * 2
-        
+
         # DeepNorm beta constant
         beta = (8.0 * num_sublayers) ** -0.25
 
@@ -112,7 +113,7 @@ class TransformerDecoder(nn.Module):
                 layer_typed = cast(TransformerLayer, layer)
                 nn.init.normal_(layer_typed.attn.proj.weight, mean=0.0, std=0.02 * beta)
                 nn.init.normal_(layer_typed.ffn.w2.weight, mean=0.0, std=0.02 * beta)
-                
+
             # Also scale the shared memory projection
             nn.init.normal_(self.rr_cell.proj_m.weight, mean=0.0, std=0.02 * beta)
         else:
@@ -157,7 +158,7 @@ class TransformerDecoder(nn.Module):
                 layer_typed = cast(TransformerLayer, layer)
                 h, m = layer_typed(h, idx, m)
 
-        elif self.residual_mode == "attnres_block":
+        elif self.residual_mode in {"attnres_block", "block_attnres"}:
             # Block-0 = token embedding (lets every layer attend to raw input).
             blocks: list[torch.Tensor] = [h]
             partial_block: torch.Tensor = h
@@ -167,6 +168,12 @@ class TransformerDecoder(nn.Module):
                     blocks, partial_block, idx
                 )
             h = partial_block
+
+        elif self.residual_mode == "full_attnres":
+            history: list[torch.Tensor] = [h]
+            for layer in self.layers:
+                layer_typed = cast(TransformerLayer, layer)
+                history, h = layer_typed.forward_full_attnres(history, h)
 
         else:  # standard
             for idx, layer in enumerate(self.layers):

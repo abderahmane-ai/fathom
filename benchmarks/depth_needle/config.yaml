@@ -1,0 +1,58 @@
+seed: 42
+modes:
+  - standard
+  - recurrent_residual
+  - block_attnres
+  - full_attnres
+
+model:
+  residual_mode: standard
+  d_model: 256
+  n_heads: 8
+  ff_dim: 1024
+  num_layers: 12
+  max_seq_len: 512
+  vocab_size: 64
+  dropout: 0.0
+  recurrent_residual:
+    gate_r_bias: -3.0
+    gate_alpha_bias: -2.0
+    eps: 1.0e-5
+  attnres_block:
+    block_size: 6
+
+data:
+  max_seq_len: 512
+  batch_size: 64
+  num_workers: 2
+  n_eval: 1000
+
+trainer:
+  precision: bf16-mixed
+  accelerator: gpu
+  devices: 1
+  strategy: auto
+  max_epochs: -1
+  matmul_precision: high
+  gradient_clip_val: 1.0
+  optimizer:
+    lr: 5.0e-4
+    weight_decay: 0.05
+    betas: [0.9, 0.95]
+
+benchmark:
+  task: depth_needle
+  max_params: 60000000
+  max_steps: 3000
+  estimated_train_batches: 1000
+  val_check_interval: 250
+  checkpoint_every_n_steps: 500
+  status_every_n_steps: 100
+  log_every_n_steps: 25
+  save_top_k: 2
+  resume: true
+
+wandb:
+  enabled: true
+  project: recurrent-residuals
+

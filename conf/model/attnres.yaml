@@ -1,7 +1,7 @@
 # conf/model/attnres.yaml — Block Attention Residuals transformer
 # @package model
 
-residual_mode: attnres_block
+residual_mode: block_attnres
 
 d_model: 768
 n_heads: 12
@@ -12,6 +12,6 @@ vocab_size: 50257
 dropout: 0.1
 
 attnres_block:
-  # Number of *sublayers* per block (Attn + FFN = 2 per transformer layer).
-  # 6 sublayers = 3 transformer layers per block → 4 blocks for 12-layer model.
+  # Number of sublayers per block (attention + FFN = 2 per transformer layer).
+  # 6 sublayers = 3 transformer layers per block → 4 blocks for a 12-layer model.
   block_size: 6

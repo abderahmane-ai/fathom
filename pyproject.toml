@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "recurrent-residuals"
@@ -25,6 +25,10 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.4.0",
 ]
+benchmarks = [
+    "modal>=1.4.0",
+    "wandb>=0.17.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -38,8 +42,11 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "ANN", "B", "SIM"]
 ignore = [
-    "ANN101",  # self type annotation not required
-    "ANN102",  # cls type annotation not required
+    "ANN401",  # flexible framework callbacks/config objects
+    "N802",    # pytest fixture names use established short aliases
+    "N803",    # pytest fixture arguments use established short aliases
+    "N806",    # tensor-shape aliases such as B/S are conventional here
+    "N812",    # common torch/lightning aliases are clearer locally
 ]
 
 [tool.ruff.lint.per-file-ignores]

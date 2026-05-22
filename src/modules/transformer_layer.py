@@ -1,4 +1,4 @@
-"""Transformer Layer orchestrator with multi-mode residual support.
+"""Transformer layer orchestrator with multi-mode residual support.
 
 Supported Architectures:
 1.  **Standard / RecurrentResidual**:
@@ -10,7 +10,7 @@ Supported Architectures:
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -33,29 +33,35 @@ class TransformerLayer(nn.Module):
         self.ln_1 = nn.LayerNorm(config.d_model)
         self.ln_2 = nn.LayerNorm(config.d_model)
 
-        self.attn = Attention(config.d_model, config.n_heads,
-                               getattr(config, "dropout", 0.1))
-        self.ffn = FeedForward(config.d_model, config.ff_dim,
-                               getattr(config, "dropout", 0.1))
+        self.attn = Attention(config.d_model, config.n_heads, getattr(config, "dropout", 0.1))
+        self.ffn = FeedForward(config.d_model, config.ff_dim, getattr(config, "dropout", 0.1))
 
         # ── Mode-specific residual modules ──────────────────────────────────
-        self.rr_cell: Optional[nn.Module] = None
+        self.rr_cell: nn.Module | None = None
 
         if config.residual_mode == "recurrent_residual":
             from .recurrent_residual import RecurrentResidualCell
+
             # Defaults to per-layer cell; TransformerDecoder can override this
             # with a shared instance to enable global memory flow.
             self.rr_cell = RecurrentResidualCell(config.d_model, config.num_layers)
 
-        elif config.residual_mode == "attnres_block":
+        elif config.residual_mode in {"attnres_block", "block_attnres"}:
             from .attnres_block import BlockAttnRes
+
             block_size: int = config.attnres_block.block_size
-            assert block_size % 2 == 0, "attnres_block.block_size must be even."
+            if block_size < 2 or block_size % 2 != 0:
+                raise ValueError("attnres_block.block_size must be an even sublayer count.")
             self.layers_per_block: int = block_size // 2
 
-            # Cross-block projection heads.
             self.attn_res = BlockAttnRes(config.d_model)
             self.ffn_res = BlockAttnRes(config.d_model)
+
+        elif config.residual_mode == "full_attnres":
+            from .attnres_block import FullAttnRes
+
+            self.full_attn_res = FullAttnRes(config.d_model)
+            self.full_ffn_res = FullAttnRes(config.d_model)
 
         self.residual_mode: str = config.residual_mode
 
@@ -67,8 +73,8 @@ class TransformerLayer(nn.Module):
         self,
         x: torch.Tensor,
         layer_idx: int,
-        m: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        m: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Forward pass for ``standard`` and ``recurrent_residual`` modes.
 
         Args:
@@ -79,9 +85,9 @@ class TransformerLayer(nn.Module):
         Returns:
             Tuple of (updated hidden state, updated memory state).
         """
-        if self.residual_mode == "attnres_block":
+        if self.residual_mode in {"attnres_block", "block_attnres", "full_attnres"}:
             raise ValueError(
-                "Use forward_attnres() for attnres_block mode."
+                "Use the Attention Residual forward path for this residual mode."
             )
 
         # ── Attention sublayer ────────────────────────────────────────────
@@ -106,14 +112,22 @@ class TransformerLayer(nn.Module):
 
         return h_new, m_new
 
-
     def forward_attnres(
         self,
         blocks: list[torch.Tensor],
         partial_block: torch.Tensor,
         layer_idx: int,
     ) -> tuple[list[torch.Tensor], torch.Tensor]:
-        """Forward pass for sparse block-wise attention residuals."""
+        """Forward pass for sparse block-wise attention residuals.
+
+        Args:
+            blocks: Completed block states, including source embeddings.
+            partial_block: Current block residual state.
+            layer_idx: Zero-based transformer layer index.
+
+        Returns:
+            Updated block history and partial block state.
+        """
         # Pre-Attn aggregation from previous blocks.
         h_in = self.attn_res(blocks, partial_block)
         y_attn = self.attn(self.ln_1(h_in))
@@ -124,9 +138,35 @@ class TransformerLayer(nn.Module):
         y_ffn = self.ffn(self.ln_2(h_in))
         partial_block = partial_block + y_ffn
 
-        # Handle block completion and state storage.
         if (layer_idx + 1) % self.layers_per_block == 0:
             blocks = [*blocks, partial_block]
 
         return blocks, partial_block
 
+    def forward_full_attnres(
+        self,
+        history: list[torch.Tensor],
+        x: torch.Tensor,
+    ) -> tuple[list[torch.Tensor], torch.Tensor]:
+        """Forward pass for diagnostic full Attention Residuals.
+
+        Args:
+            history: Previous hidden states in depth order.
+            x: Current hidden state.
+
+        Returns:
+            Updated history and hidden state.
+
+        Preconditions:
+            ``history`` contains at least the token embedding state.
+        """
+        h_in = self.full_attn_res([*history, x])
+        y_attn = self.attn(self.ln_1(h_in))
+        h_mid = x + y_attn
+        history = [*history, h_mid]
+
+        h_in = self.full_ffn_res(history)
+        y_ffn = self.ffn(self.ln_2(h_in))
+        h_new = h_mid + y_ffn
+        history = [*history, h_new]
+        return history, h_new

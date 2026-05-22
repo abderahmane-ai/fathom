@@ -26,8 +26,6 @@ Design Rationale:
 """
 from __future__ import annotations
 
-from typing import Optional
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -96,6 +94,10 @@ class RecurrentResidualCell(nn.Module):
         # ── Learnable initial memory ────────────────────────────────────
         self.m_init = nn.Parameter(torch.zeros(d_model))
 
+        # Diagnostics — scalar snapshots written after each forward pass.
+        self.last_alpha: torch.Tensor = torch.zeros(1)
+        self.last_alpha_per_layer: dict[int, torch.Tensor] = {}
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -104,7 +106,7 @@ class RecurrentResidualCell(nn.Module):
         self,
         batch_size: int,
         seq_len: int,
-        device: Optional[torch.device] = None,
+        device: torch.device | None = None,
     ) -> torch.Tensor:
         """Return the initial memory state expanded to batch size.
 
@@ -153,12 +155,20 @@ class RecurrentResidualCell(nn.Module):
 
         # ── Write gate & memory update ────────────────────────────────────
         sublayer_pos = layer_idx * 2 + sublayer
-        depth_bias = self.depth_emb(
-            torch.tensor(sublayer_pos, device=h_prev.device)
-        )
+        if sublayer_pos >= self.num_sublayers:
+            raise IndexError(
+                f"sublayer_pos={sublayer_pos} is out of range for "
+                f"num_sublayers={self.num_sublayers} "
+                f"(layer_idx={layer_idx}, sublayer={sublayer}). "
+                "Checkpoint may have been trained with a different num_layers."
+            )
+        # Index directly into the weight matrix; avoids a CPU tensor allocation
+        # on every forward call and cannot silently exceed the table bounds on CUDA.
+        depth_bias = self.depth_emb.weight[sublayer_pos]
         alpha = torch.sigmoid(self.gate_alpha(y) + depth_bias)
         self.last_alpha = alpha.detach().mean()
-        
+        self.last_alpha_per_layer[layer_idx] = self.last_alpha.clone()
+
         m_new = alpha * y + (1.0 - alpha) * m
 
         return h_new, m_new

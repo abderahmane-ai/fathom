@@ -39,11 +39,11 @@ def test_transformer_decoder_shapes(config):
     B, S = 2, 16
     input_ids = torch.randint(0, config.vocab_size, (B, S))
 
-    for mode in ["standard", "recurrent_residual", "attnres_block"]:
+    for mode in ["standard", "recurrent_residual", "block_attnres", "full_attnres"]:
         config.residual_mode = mode
         model = TransformerDecoder(config)
         logits = model(input_ids)
-        
+
         assert logits.shape == (B, S, config.vocab_size)
 
 
@@ -55,7 +55,7 @@ def test_weight_tying(config):
 
 def test_recurrent_residual_memory_flow(config):
     """Verify that memory flows across layers in RR mode.
-    
+
     We can check this by verifying that the TransformerDecoder forward
     pass actually passes the m state through.
     """
@@ -80,13 +80,14 @@ def test_recurrent_residual_memory_flow(config):
         assert args[2] is not None, f"Layer {idx} did not receive memory state m"
         assert args[2].shape == (B, S, config.d_model)
 
+
 def test_shared_rr_cell_params(config):
     """Verify that all layers share the same rr_cell instance in RR mode."""
     config.residual_mode = "recurrent_residual"
     model = TransformerDecoder(config)
-    
+
     rr_cell = model.rr_cell
     assert rr_cell is not None
-    
+
     for layer in model.layers:
         assert layer.rr_cell is rr_cell, "Layers are not sharing the same RR cell instance"

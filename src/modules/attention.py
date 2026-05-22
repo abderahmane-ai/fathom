@@ -5,8 +5,6 @@ memory utilization (O(S) instead of O(S²)) and native causal masking.
 """
 from __future__ import annotations
 
-from typing import Optional
-
 import torch
 import torch.nn as nn
 from einops import rearrange
@@ -24,7 +22,7 @@ class Attention(nn.Module):
     def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1) -> None:
         super().__init__()
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads."
-        
+
         self.d_model = d_model
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads
@@ -37,10 +35,10 @@ class Attention(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
+        mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass with optimized SDPA kernel dispatch."""
-        
+
         # Project and reshape into multi-head components.
         qkv = rearrange(
             self.qkv(x),

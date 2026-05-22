@@ -67,8 +67,7 @@ class TestTransformerLayerAttnRes:
     def test_blocks_grows_at_boundary(self, attnres_cfg, B, S, d_model):
         """blocks list must grow by 1 when layer_idx+1 is a multiple of layers_per_block."""
         layer = TransformerLayer(attnres_cfg)
-        # attnres_cfg has block_size=4 → layers_per_block=2
-        # Boundary at layer_idx = 1 (idx+1=2, 2%2==0)
+        # attnres_cfg has block_size=4 sublayers → 2 transformer layers per block.
         block0 = torch.randn(B, S, d_model)
         partial = torch.randn(B, S, d_model)
 
@@ -94,7 +93,7 @@ class TestTransformerLayerAttnRes:
         """Calling forward() on an attnres layer must raise ValueError."""
         layer = TransformerLayer(attnres_cfg)
         x = torch.randn(B, S, d_model)
-        with pytest.raises(ValueError, match="forward_attnres"):
+        with pytest.raises(ValueError, match="Attention Residual forward path"):
             layer(x, layer_idx=0)
 
     def test_grad_flows_through_partial(self, attnres_cfg, B, S, d_model):
@@ -119,15 +118,15 @@ class TestTransformerLayerRR:
     def test_forward_with_memory_flow(self, rr_cfg, B, S, d_model):
         """Verify layer passes and updates memory state m."""
         from src.modules.recurrent_residual import RecurrentResidualCell
-        
+
         layer = TransformerLayer(rr_cfg)
         # Use the cell to get initial state
         rr_cell = RecurrentResidualCell(d_model, rr_cfg.num_layers)
         m_in = rr_cell.get_initial_state(B, S)
-        
+
         x = torch.randn(B, S, d_model)
         h_out, m_out = layer(x, layer_idx=0, m=m_in)
-        
+
         assert h_out.shape == (B, S, d_model)
         assert m_out is not None
         assert m_out.shape == (B, S, d_model)
@@ -135,16 +134,16 @@ class TestTransformerLayerRR:
 
     def test_grad_flows_through_rr_path(self, rr_cfg, B, S, d_model):
         from src.modules.recurrent_residual import RecurrentResidualCell
-        
+
         layer = TransformerLayer(rr_cfg)
         rr_cell = RecurrentResidualCell(d_model, rr_cfg.num_layers)
         m_in = rr_cell.get_initial_state(B, S)
-        
+
         x = torch.randn(B, S, d_model, requires_grad=True)
         h_out, m_out = layer(x, layer_idx=0, m=m_in)
         h_out.sum().backward()
-        
+
         assert x.grad is not None
-        # Since layer.rr_cell was instantiated in __init__ (default), 
+        # Since layer.rr_cell was instantiated in __init__ (default),
         # it should have gradients.
         assert layer.rr_cell.gate_r.weight.grad is not None

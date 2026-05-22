@@ -1,0 +1,62 @@
+seed: 42
+modes:
+  - standard
+  - recurrent_residual
+  - block_attnres
+
+model:
+  residual_mode: standard
+  d_model: 512
+  n_heads: 8
+  ff_dim: 2048
+  num_layers: 6
+  max_seq_len: 128
+  vocab_size: 50257
+  dropout: 0.1
+  recurrent_residual:
+    gate_r_bias: -3.0
+    gate_alpha_bias: -2.0
+    eps: 1.0e-5
+  attnres_block:
+    block_size: 6
+
+data:
+  dataset_name: roneneldan/TinyStories
+  dataset_config: default
+  tokenizer_name: gpt2
+  max_seq_len: 128
+  batch_size: 128
+  num_workers: 4
+  train_split: train[:1%]
+  val_split: validation[:1%]
+  test_split: validation[:1%]
+
+trainer:
+  precision: bf16-mixed
+  accelerator: gpu
+  devices: 1
+  strategy: auto
+  max_epochs: -1
+  matmul_precision: high
+  gradient_clip_val: 1.0
+  optimizer:
+    lr: 1.0e-3
+    weight_decay: 0.1
+    betas: [0.9, 0.95]
+
+benchmark:
+  task: lm
+  max_params: 60000000
+  max_steps: 4000
+  estimated_train_batches: 287
+  val_check_interval: 500
+  checkpoint_every_n_steps: 500
+  status_every_n_steps: 100
+  log_every_n_steps: 50
+  save_top_k: 2
+  resume: true
+
+wandb:
+  enabled: true
+  project: recurrent-residuals
+

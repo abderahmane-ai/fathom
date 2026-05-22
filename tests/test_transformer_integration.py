@@ -25,22 +25,24 @@ def base_config():
     })
 
 
-@pytest.mark.parametrize("mode", ["standard", "recurrent_residual", "attnres_block"])
+@pytest.mark.parametrize(
+    "mode",
+    ["standard", "recurrent_residual", "block_attnres", "full_attnres"],
+)
 def test_transformer_forward_modes(base_config, mode):
     """Verify all residual modes produce correct output shapes and handle forward passes."""
     config = base_config
     config.residual_mode = mode
-    
-    if mode == "attnres_block":
-        config.attnres_block = {"block_size": 4} # 2 layers per block
-    
+    if mode == "block_attnres":
+        config.attnres_block = {"block_size": 4}
+
     model = TransformerDecoder(config)
-    
+
     B, S = 2, 16
     input_ids = torch.randint(0, config.vocab_size, (B, S))
-    
+
     logits = model(input_ids)
-    
+
     assert logits.shape == (B, S, config.vocab_size)
     assert not torch.isnan(logits).any(), f"NaN detected in {mode} logits"
 
@@ -55,12 +57,12 @@ def test_recurrent_residual_memory_persistence(base_config):
         "gate_alpha_bias": -2.0,
         "eps": 1e-5
     }
-    
+
     model = TransformerDecoder(config)
     rr_cell = model.rr_cell
-    
+
     B, S = 1, 8
-    
+
     # Check initial state
     m_init = rr_cell.get_initial_state(B, S)
     expected_m = rr_cell.m_init.view(1, 1, -1).expand(B, S, -1)

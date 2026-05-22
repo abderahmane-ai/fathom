@@ -13,7 +13,7 @@ import pytest
 import torch
 from torch.testing import assert_close
 
-from src.modules.attnres_block import BlockAttnRes
+from src.modules.attnres_block import BlockAttnRes, FullAttnRes
 
 
 @pytest.fixture
@@ -123,3 +123,21 @@ class TestBlockAttnResEdgeCases:
         partial = torch.randn(1, 1, d_model)
         out = module(blocks=[block0], partial_block=partial)
         assert not torch.isnan(out).any(), "NaN detected for S=1."
+
+
+class TestFullAttnRes:
+    """Diagnostic full-depth Attention Residual reference."""
+
+    def test_uniform_average_at_init(self, B, S, d_model):
+        """Zero pseudo-query must average every stored depth state."""
+        module = FullAttnRes(d_model)
+        states = [torch.ones(B, S, d_model) * value for value in range(4)]
+        out = module(states)
+        expected = torch.ones(B, S, d_model) * 1.5
+        assert_close(out, expected, atol=1e-5, rtol=1e-5)
+
+    def test_raises_on_empty_history(self, d_model):
+        """Full AttnRes requires at least one stored state."""
+        module = FullAttnRes(d_model)
+        with pytest.raises(ValueError, match="must not be empty"):
+            module([])

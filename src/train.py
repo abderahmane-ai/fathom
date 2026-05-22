@@ -5,23 +5,22 @@ PyTorch Lightning. Supports experiment switching via Hydra overrides.
 """
 from __future__ import annotations
 
-import math
 import logging
+import math
 from typing import Any
 
+import hydra
+import lightning as L
 import torch
 import torch.nn.functional as F
+from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
+from lightning.pytorch.loggers import CSVLogger
+from omegaconf import DictConfig, OmegaConf
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 
-import hydra
-from omegaconf import DictConfig, OmegaConf
-import lightning as L
-from lightning.pytorch.loggers import CSVLogger
-from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
-
-from src.modules import TransformerDecoder
 from src.data import LanguageModelDataModule
+from src.modules import TransformerDecoder
 
 log = logging.getLogger(__name__)
 
@@ -52,18 +51,18 @@ class LanguageModel(L.LightningModule):
             labels.view(-1),
         )
 
-    def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
+    def training_step(self, batch: torch.Tensor, _batch_idx: int) -> torch.Tensor:
         loss = self._compute_loss(batch)
         self.log("train/loss", loss, on_step=True, on_epoch=False, prog_bar=True)
         self.log("train/ppl", torch.exp(loss.detach()), on_step=True, on_epoch=False)
         return loss
 
-    def validation_step(self, batch: torch.Tensor, batch_idx: int) -> None:
+    def validation_step(self, batch: torch.Tensor, _batch_idx: int) -> None:
         loss = self._compute_loss(batch)
         self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("val/ppl", torch.exp(loss), on_step=False, on_epoch=True, sync_dist=True)
 
-    def test_step(self, batch: torch.Tensor, batch_idx: int) -> None:
+    def test_step(self, batch: torch.Tensor, _batch_idx: int) -> None:
         loss = self._compute_loss(batch)
         self.log("test/loss", loss, on_epoch=True, sync_dist=True)
         self.log("test/ppl", torch.exp(loss), on_epoch=True, sync_dist=True)
@@ -74,9 +73,13 @@ class LanguageModel(L.LightningModule):
         sch_cfg = self.trainer_cfg.scheduler
 
         # Weight decay only on 2D+ tensors (kernels/weights), excluding biases and norms.
-        decay_params = [p for n, p in self.model.named_parameters() if p.requires_grad and p.dim() >= 2]
-        no_decay_params = [p for n, p in self.model.named_parameters() if p.requires_grad and p.dim() < 2]
-        
+        decay_params = [
+            p for _name, p in self.model.named_parameters() if p.requires_grad and p.dim() >= 2
+        ]
+        no_decay_params = [
+            p for _name, p in self.model.named_parameters() if p.requires_grad and p.dim() < 2
+        ]
+
         param_groups = [
             {"params": decay_params, "weight_decay": opt_cfg.weight_decay},
             {"params": no_decay_params, "weight_decay": 0.0},
@@ -150,4 +153,3 @@ def main(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
     main()
-

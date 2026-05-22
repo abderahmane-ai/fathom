@@ -34,17 +34,17 @@ class TestRRCellInit:
         y = torch.randn(B, S, d_model)
 
         h_new, m_new = cell(h_prev, y, m, layer_idx=0, sublayer=0)
-        
+
         # At init: r ≈ 0, proj_m ≈ 0.  So h_new ≈ LN(alpha * h_prev + y)
         expected = F.layer_norm(cell.alpha * h_prev + y, (d_model,))
-        
+
         assert_close(h_new, expected, atol=1e-3, rtol=1e-3)
 
     def test_m_init_is_learnable(self, cell, B, S, d_model):
         """m_init should be a learnable parameter initialized to zero."""
         assert isinstance(cell.m_init, torch.nn.Parameter)
         assert cell.m_init.abs().max() == 0.0
-        
+
         # Changing m_init should change the initial state.
         with torch.no_grad():
             cell.m_init.fill_(1.0)
@@ -141,7 +141,7 @@ class TestRRCellReset:
         with torch.no_grad():
             cell.m_init.normal_()
         expected = cell.m_init.view(1, 1, -1).expand(B, S, -1)
-        
+
         m = cell.get_initial_state(B, S)
         assert_close(m, expected)
 

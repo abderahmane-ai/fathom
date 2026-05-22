@@ -6,14 +6,12 @@ utilized (no padding tokens), maximizing compute throughput.
 """
 from __future__ import annotations
 
-from typing import Optional
-
 import torch
-from torch.utils.data import DataLoader, Dataset
-from lightning import LightningDataModule
 from datasets import load_dataset
-from transformers import AutoTokenizer
+from lightning import LightningDataModule
 from omegaconf import DictConfig
+from torch.utils.data import DataLoader, Dataset
+from transformers import AutoTokenizer
 
 
 class PackedTokenDataset(Dataset):
@@ -45,9 +43,9 @@ class LanguageModelDataModule(LightningDataModule):
     def __init__(self, cfg: DictConfig) -> None:
         super().__init__()
         self.cfg = cfg
-        self._train: Optional[PackedTokenDataset] = None
-        self._val: Optional[PackedTokenDataset] = None
-        self._test: Optional[PackedTokenDataset] = None
+        self._train: PackedTokenDataset | None = None
+        self._val: PackedTokenDataset | None = None
+        self._test: PackedTokenDataset | None = None
 
     def _tokenise_split(self, split: str) -> torch.Tensor:
         """Downloads and tokenizes a specific split, returning a flat tensor."""
@@ -79,7 +77,7 @@ class LanguageModelDataModule(LightningDataModule):
 
         return torch.tensor(all_ids, dtype=torch.long)
 
-    def setup(self, stage: Optional[str] = None) -> None:
+    def setup(self, stage: str | None = None) -> None:
         """Prepares splits for the requested training stage."""
         seq_len = self.cfg.max_seq_len
 
@@ -91,10 +89,9 @@ class LanguageModelDataModule(LightningDataModule):
                 ids = self._tokenise_split(self.cfg.val_split)
                 self._val = PackedTokenDataset(ids, seq_len)
 
-        if stage in (None, "test"):
-            if self._test is None:
-                ids = self._tokenise_split(self.cfg.test_split)
-                self._test = PackedTokenDataset(ids, seq_len)
+        if stage in (None, "test") and self._test is None:
+            ids = self._tokenise_split(self.cfg.test_split)
+            self._test = PackedTokenDataset(ids, seq_len)
 
     def _make_loader(self, dataset: PackedTokenDataset, shuffle: bool) -> DataLoader:
         """Standardizes DataLoader construction."""
@@ -116,4 +113,3 @@ class LanguageModelDataModule(LightningDataModule):
 
     def test_dataloader(self) -> DataLoader:
         return self._make_loader(self._test, shuffle=False)
-

@@ -73,7 +73,7 @@ def standard_cfg(d_model, n_heads, ff_dim, num_layers):
 
 @pytest.fixture
 def attnres_cfg(d_model, n_heads, ff_dim, num_layers):
-    """Minimal OmegaConf config for attnres_block mode (block_size=4 sublayers)."""
+    """Minimal OmegaConf config for block_attnres mode with 2 layers per block."""
     return OmegaConf.create({
         "d_model": d_model,
         "n_heads": n_heads,
@@ -82,8 +82,8 @@ def attnres_cfg(d_model, n_heads, ff_dim, num_layers):
         "max_seq_len": 32,
         "vocab_size": 256,
         "dropout": 0.0,
-        "residual_mode": "attnres_block",
-        "attnres_block": {"block_size": 4},  # 4 sublayers = 2 layers per block
+        "residual_mode": "block_attnres",
+        "attnres_block": {"block_size": 4},
     })
 
 
