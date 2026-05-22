@@ -102,7 +102,6 @@ def config_for_mode(
     selected = OmegaConf.create(deepcopy(OmegaConf.to_container(cfg, resolve=True)))
     selected.model = model_cfg if model_cfg is not None else selected.model
     selected.model.residual_mode = residual_mode
-    if residual_mode == "block_attnres":
-        selected.model.residual_mode = "block_attnres"
-        selected.model.attnres_block = selected.model.get("attnres_block", {"block_size": 6})
+    if residual_mode == "block_attnres" and "attnres_block" not in selected.model:
+        raise ValueError("block_attnres requires model.attnres_block config.")
     return selected

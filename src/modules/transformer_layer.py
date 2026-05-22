@@ -17,6 +17,7 @@ import torch.nn as nn
 
 from .attention import Attention
 from .ffn import FeedForward
+from .recurrent_residual import RecurrentResidualCell
 
 
 class TransformerLayer(nn.Module):
@@ -26,7 +27,7 @@ class TransformerLayer(nn.Module):
         config: Configuration exposing d_model, n_heads, ff_dim, and residual_mode.
     """
 
-    def __init__(self, config: Any) -> None:
+    def __init__(self, config: Any, rr_cell: RecurrentResidualCell | None = None) -> None:
         super().__init__()
 
         # Pre-sublayer normalisation layers.
@@ -40,13 +41,20 @@ class TransformerLayer(nn.Module):
         self.rr_cell: nn.Module | None = None
 
         if config.residual_mode == "recurrent_residual":
-            from .recurrent_residual import RecurrentResidualCell
+            if rr_cell is None:
+                rr_cfg = config.recurrent_residual
+                rr_cell = RecurrentResidualCell(
+                    config.d_model,
+                    config.num_layers,
+                    read_gate_bias=rr_cfg.read_gate_bias,
+                    update_gate_bias=rr_cfg.update_gate_bias,
+                    eps=rr_cfg.eps,
+                    gate_init_std=rr_cfg.gate_init_std,
+                    memory_gain_init=rr_cfg.memory_gain_init,
+                )
+            self.rr_cell = rr_cell
 
-            # Defaults to per-layer cell; TransformerDecoder can override this
-            # with a shared instance to enable global memory flow.
-            self.rr_cell = RecurrentResidualCell(config.d_model, config.num_layers)
-
-        elif config.residual_mode in {"attnres_block", "block_attnres"}:
+        elif config.residual_mode == "block_attnres":
             from .attnres_block import BlockAttnRes
 
             block_size: int = config.attnres_block.block_size
@@ -85,7 +93,7 @@ class TransformerLayer(nn.Module):
         Returns:
             Tuple of (updated hidden state, updated memory state).
         """
-        if self.residual_mode in {"attnres_block", "block_attnres", "full_attnres"}:
+        if self.residual_mode in {"block_attnres", "full_attnres"}:
             raise ValueError(
                 "Use the Attention Residual forward path for this residual mode."
             )

@@ -1,18 +1,8 @@
-"""Unit tests for RecurrentResidualCell (src/modules/recurrent_residual.py).
-
-Validates:
-* Identity-like behaviour at init (gate_r biased closed, proj_m zeroed).
-* Memory EMA update equation matches manual computation.
-* Two sublayer positions produce distinct depth embeddings.
-* Gradient flows through h_new.
-* reset_memory correctly zeros the state.
-* Memory does not accumulate across reset_memory calls.
-"""
+"""Unit tests for the Recurrent Residual cell."""
 from __future__ import annotations
 
 import pytest
 import torch
-import torch.nn.functional as F
 from torch.testing import assert_close
 
 from src.modules.recurrent_residual import RecurrentResidualCell
@@ -20,32 +10,45 @@ from src.modules.recurrent_residual import RecurrentResidualCell
 
 @pytest.fixture
 def cell(d_model, num_layers):
-    c = RecurrentResidualCell(d_model, num_layers)
-    return c
+    """Create a small RR cell for tests."""
+    return RecurrentResidualCell(d_model, num_layers)
 
 
 class TestRRCellInit:
-    """At initialisation the cell follows DeepNorm residual logic."""
+    """Initialization behavior."""
 
-    def test_deepnorm_at_init(self, cell, B, S, d_model):
-        """h_new ≈ LN(alpha * h_prev + y) when gates are closed at init."""
+    def test_standard_residual_at_init(self, cell, B, S, d_model):
+        """Zero memory gain makes h_new exactly h_prev + y."""
         m = cell.get_initial_state(B, S)
         h_prev = torch.randn(B, S, d_model)
         y = torch.randn(B, S, d_model)
 
-        h_new, m_new = cell(h_prev, y, m, layer_idx=0, sublayer=0)
+        h_new, _ = cell(h_prev, y, m, layer_idx=0, sublayer=0)
 
-        # At init: r ≈ 0, proj_m ≈ 0.  So h_new ≈ LN(alpha * h_prev + y)
-        expected = F.layer_norm(cell.alpha * h_prev + y, (d_model,))
+        assert_close(h_new, h_prev + y, atol=1e-6, rtol=1e-6)
 
-        assert_close(h_new, expected, atol=1e-3, rtol=1e-3)
+    def test_methodology_parameter_count(self, cell):
+        """RR parameter count should follow (num_sublayers + 6) * d_model."""
+        assert sum(parameter.numel() for parameter in cell.parameters()) == (
+            cell.parameter_count_formula
+        )
 
-    def test_m_init_is_learnable(self, cell, B, S, d_model):
+    def test_no_dense_gate_or_projection_matrices(self, cell):
+        """RR gates and memory read path must stay diagonal."""
+        parameter_shapes = {
+            name: tuple(parameter.shape) for name, parameter in cell.named_parameters()
+        }
+        assert parameter_shapes["read_weight"] == (cell.d_model,)
+        assert parameter_shapes["update_weight"] == (cell.d_model,)
+        assert parameter_shapes["memory_gain"] == (cell.d_model,)
+        assert all("weight" not in name or shape != (cell.d_model, cell.d_model)
+                   for name, shape in parameter_shapes.items())
+
+    def test_m_init_is_learnable(self, cell, B, S):
         """m_init should be a learnable parameter initialized to zero."""
         assert isinstance(cell.m_init, torch.nn.Parameter)
         assert cell.m_init.abs().max() == 0.0
 
-        # Changing m_init should change the initial state.
         with torch.no_grad():
             cell.m_init.fill_(1.0)
         m = cell.get_initial_state(B, S)
@@ -56,50 +59,44 @@ class TestRRCellMemoryUpdate:
     """Memory EMA update equation."""
 
     def test_memory_ema_equation(self, cell, B, S, d_model):
-        """Manually verify m_new = alpha * y + (1-alpha) * m_prev."""
+        """Manually verify m_new = u * y + (1-u) * m_prev."""
         m_before = cell.get_initial_state(B, S)
         h_prev = torch.randn(B, S, d_model)
         y = torch.randn(B, S, d_model)
 
         _, m_after = cell(h_prev, y, m_before, layer_idx=0, sublayer=0)
 
-        # Recompute alpha manually.
-        depth_pos = torch.tensor(0)  # layer=0, sublayer=0 → pos=0
-        depth_bias = cell.depth_emb(depth_pos)
-        alpha_gate = torch.sigmoid(cell.gate_alpha(y) + depth_bias)
-        expected_m = alpha_gate * y + (1.0 - alpha_gate) * m_before
-        assert_close(m_after, expected_m.detach(), atol=1e-5, rtol=1e-5)
+        update_gate = torch.sigmoid(
+            cell.update_weight * y + cell.update_bias + cell.depth_bias[0]
+        )
+        expected_m = update_gate * y + (1.0 - update_gate) * m_before
+        assert_close(m_after, expected_m, atol=1e-6, rtol=1e-6)
 
     def test_memory_accumulates_across_layers(self, cell, B, S, d_model):
         """Memory should be non-zero after at least one forward pass."""
-        with torch.no_grad():
-            cell.m_init.zero_()
         m = cell.get_initial_state(B, S)
-
         y = torch.randn(B, S, d_model)
         _, m_after = cell(torch.zeros(B, S, d_model), y, m, layer_idx=0, sublayer=0)
 
-        assert m_after.abs().sum() > 0.0, "Memory should be non-zero after write."
+        assert m_after.abs().sum() > 0.0
 
 
-class TestRRCellDepthEmbedding:
-    """Depth embeddings per sublayer position."""
+class TestRRCellDepthBias:
+    """Depth bias indexing."""
 
     def test_sublayer_positions_are_distinct(self, cell, d_model):
-        """Sublayer 0 and sublayer 1 of the same layer use different embeddings."""
-        pos_attn = torch.tensor(0 * 2 + 0)  # layer=0, sublayer=0
-        pos_ffn = torch.tensor(0 * 2 + 1)   # layer=0, sublayer=1
-
-        # Force them to differ to test the indexing logic.
+        """Sublayer 0 and sublayer 1 of the same layer use different bias rows."""
         with torch.no_grad():
-            cell.depth_emb.weight[pos_attn] = torch.ones(d_model)
-            cell.depth_emb.weight[pos_ffn] = torch.ones(d_model) * -1.0
+            cell.depth_bias[0] = torch.ones(d_model)
+            cell.depth_bias[1] = torch.ones(d_model) * -1.0
 
-        emb_attn = cell.depth_emb(pos_attn)
-        emb_ffn = cell.depth_emb(pos_ffn)
-        assert not torch.allclose(emb_attn, emb_ffn), (
-            "Attn and FFN sublayer embeddings should be distinct."
-        )
+        assert not torch.allclose(cell.depth_bias[0], cell.depth_bias[1])
+
+    def test_invalid_sublayer_raises(self, cell, B, S, d_model):
+        """Only attention and FFN sublayer ids are valid."""
+        m = cell.get_initial_state(B, S)
+        with pytest.raises(ValueError, match="sublayer"):
+            cell(torch.zeros(B, S, d_model), torch.zeros(B, S, d_model), m, 0, sublayer=2)
 
 
 class TestRRCellGradients:
@@ -117,26 +114,26 @@ class TestRRCellGradients:
         assert h_prev.grad is not None
         assert y.grad is not None
 
-    def test_gate_params_receive_grad(self, cell, B, S, d_model):
-        """gate_r and gate_alpha parameters must receive gradient signal."""
-        m_0 = cell.get_initial_state(B, S)
+    def test_gate_params_receive_grad_when_memory_path_active(self, cell, B, S, d_model):
+        """Read and update gate parameters should receive gradients once memory is readable."""
+        with torch.no_grad():
+            cell.memory_gain.fill_(1.0)
+        m = torch.randn(B, S, d_model)
         h_prev = torch.randn(B, S, d_model)
         y = torch.randn(B, S, d_model)
 
-        # Run step 1: writes to memory via gate_alpha
-        h_mid, m_1 = cell(h_prev, y, m_0, layer_idx=0, sublayer=0)
-        # Run step 2: reads from memory via gate_r and proj_m
-        h_new, m_2 = cell(h_mid, y, m_1, layer_idx=0, sublayer=1)
-        h_new.sum().backward()
+        h_new, m_new = cell(h_prev, y, m, layer_idx=0, sublayer=0)
+        (h_new.sum() + m_new.sum()).backward()
 
-        assert cell.gate_r.weight.grad is not None
-        assert cell.gate_alpha.weight.grad is not None
+        assert cell.read_weight.grad is not None
+        assert cell.update_weight.grad is not None
+        assert cell.memory_gain.grad is not None
 
 
-class TestRRCellReset:
-    """Memory initialization behaviour."""
+class TestRRCellInitialState:
+    """Memory initialization behavior."""
 
-    def test_get_initial_state_uses_m_init(self, cell, B, S, d_model):
+    def test_get_initial_state_uses_m_init(self, cell, B, S):
         """get_initial_state must produce memory tensor expanded from m_init."""
         with torch.no_grad():
             cell.m_init.normal_()
@@ -146,6 +143,6 @@ class TestRRCellReset:
         assert_close(m, expected)
 
     def test_initial_state_shape(self, cell, d_model):
-        """get_initial_state must produce the new (B, S) shape."""
+        """get_initial_state must produce the expected ``(B, S, d)`` shape."""
         m = cell.get_initial_state(batch_size=4, seq_len=16)
         assert m.shape == (4, 16, d_model)

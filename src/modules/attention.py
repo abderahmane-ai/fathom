@@ -32,11 +32,7 @@ class Attention(nn.Module):
         self.proj = nn.Linear(d_model, d_model, bias=False)
         self.attn_dropout = dropout
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass with optimized SDPA kernel dispatch."""
 
         # Project and reshape into multi-head components.
@@ -52,7 +48,6 @@ class Attention(nn.Module):
         dropout_p = self.attn_dropout if self.training else 0.0
         attn_out = torch.nn.functional.scaled_dot_product_attention(
             q, k, v,
-            attn_mask=mask,
             dropout_p=dropout_p,
             is_causal=True,
         )

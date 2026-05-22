@@ -99,4 +99,11 @@ def rr_cfg(d_model, n_heads, ff_dim, num_layers):
         "vocab_size": 256,
         "dropout": 0.0,
         "residual_mode": "recurrent_residual",
+        "recurrent_residual": {
+            "read_gate_bias": -3.0,
+            "update_gate_bias": -2.0,
+            "gate_init_std": 0.01,
+            "memory_gain_init": 0.0,
+            "eps": 1e-5,
+        },
     })

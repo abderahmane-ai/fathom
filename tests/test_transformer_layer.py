@@ -117,12 +117,9 @@ class TestTransformerLayerRR:
 
     def test_forward_with_memory_flow(self, rr_cfg, B, S, d_model):
         """Verify layer passes and updates memory state m."""
-        from src.modules.recurrent_residual import RecurrentResidualCell
-
         layer = TransformerLayer(rr_cfg)
-        # Use the cell to get initial state
-        rr_cell = RecurrentResidualCell(d_model, rr_cfg.num_layers)
-        m_in = rr_cell.get_initial_state(B, S)
+        assert layer.rr_cell is not None
+        m_in = layer.rr_cell.get_initial_state(B, S)
 
         x = torch.randn(B, S, d_model)
         h_out, m_out = layer(x, layer_idx=0, m=m_in)
@@ -133,17 +130,14 @@ class TestTransformerLayerRR:
         assert not torch.allclose(h_out, x)
 
     def test_grad_flows_through_rr_path(self, rr_cfg, B, S, d_model):
-        from src.modules.recurrent_residual import RecurrentResidualCell
-
         layer = TransformerLayer(rr_cfg)
-        rr_cell = RecurrentResidualCell(d_model, rr_cfg.num_layers)
-        m_in = rr_cell.get_initial_state(B, S)
+        assert layer.rr_cell is not None
+        m_in = layer.rr_cell.get_initial_state(B, S)
 
         x = torch.randn(B, S, d_model, requires_grad=True)
         h_out, m_out = layer(x, layer_idx=0, m=m_in)
-        h_out.sum().backward()
+        assert m_out is not None
+        (h_out.sum() + m_out.sum()).backward()
 
         assert x.grad is not None
-        # Since layer.rr_cell was instantiated in __init__ (default),
-        # it should have gradients.
-        assert layer.rr_cell.gate_r.weight.grad is not None
+        assert layer.rr_cell.update_weight.grad is not None

@@ -51,6 +51,7 @@ def _prepare_remote() -> None:
     os.environ.setdefault("HF_HOME", f"{ARTIFACT_MOUNT}/hf_cache")
     os.environ.setdefault("TRANSFORMERS_CACHE", f"{ARTIFACT_MOUNT}/hf_cache")
     os.environ.setdefault("HF_DATASETS_CACHE", f"{ARTIFACT_MOUNT}/hf_cache/datasets")
+    os.environ.setdefault("RR_PACKED_CACHE_DIR", f"{ARTIFACT_MOUNT}/packed_cache")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 

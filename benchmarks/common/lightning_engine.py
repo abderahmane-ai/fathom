@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from typing import Any
@@ -13,6 +14,7 @@ from lightning.pytorch.callbacks import Callback, LearningRateMonitor, ModelChec
 from lightning.pytorch.loggers import CSVLogger
 from omegaconf import DictConfig, OmegaConf
 from torch.optim import AdamW
+from torch.optim.lr_scheduler import LambdaLR
 
 from benchmarks.common.artifacts import (
     checkpoint_dir,
@@ -113,20 +115,53 @@ class BenchmarkModule(lightning.LightningModule):
         self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("val/ppl", torch.exp(loss.detach()), on_step=False, on_epoch=True, sync_dist=True)
 
-    def configure_optimizers(self) -> AdamW:
-        """Build an AdamW optimizer.
+    def configure_optimizers(self) -> dict[str, Any]:
+        """Build AdamW with cosine warmup scheduling.
 
         Returns:
-            Configured optimizer.
+            Lightning optimizer and scheduler configuration.
         """
         opt_cfg = self.trainer_cfg.optimizer
-        return AdamW(
+        sch_cfg = self.trainer_cfg.scheduler
+        optimizer = AdamW(
             self.parameters(),
             lr=float(opt_cfg.lr),
             weight_decay=float(opt_cfg.weight_decay),
             betas=tuple(opt_cfg.get("betas", [0.9, 0.95])),
             fused=torch.cuda.is_available(),
         )
+        total_steps = max(1, int(self.trainer.estimated_stepping_batches))
+        warmup_steps = int(sch_cfg.warmup_steps)
+        min_lr_ratio = float(sch_cfg.min_lr_ratio)
+
+        def lr_lambda(step: int) -> float:
+            """Return the LR multiplier for one optimizer step."""
+            if step < warmup_steps:
+                return float(step) / max(1, warmup_steps)
+            progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+            cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+            return max(min_lr_ratio, cosine)
+
+        scheduler = LambdaLR(optimizer, lr_lambda)
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {"scheduler": scheduler, "interval": "step", "frequency": 1},
+        }
+
+    def on_before_optimizer_step(self, optimizer: torch.optim.Optimizer) -> None:
+        """Log global gradient norm before the optimizer step.
+
+        Args:
+            optimizer: Optimizer about to step.
+
+        Returns:
+            None.
+        """
+        squared_norm = torch.zeros((), device=self.device)
+        for parameter in self.parameters():
+            if parameter.grad is not None:
+                squared_norm = squared_norm + parameter.grad.detach().pow(2).sum()
+        self.log("grad/global_norm", squared_norm.sqrt(), on_step=True, prog_bar=False)
 
     def _log_rr_gates(self) -> None:
         """Log RR diagnostics when the model exposes them.
@@ -135,9 +170,10 @@ class BenchmarkModule(lightning.LightningModule):
             None.
         """
         rr_cell = getattr(self.model, "rr_cell", None)
-        if rr_cell is None or not hasattr(rr_cell, "last_alpha"):
+        if rr_cell is None or not hasattr(rr_cell, "last_update_gate"):
             return
-        self.log("rr/update_gate_mean", rr_cell.last_alpha.detach(), on_step=True)
+        self.log("rr/read_gate_mean", rr_cell.last_read_gate.detach(), on_step=True)
+        self.log("rr/update_gate_mean", rr_cell.last_update_gate.detach(), on_step=True)
 
 
 class StatusCallback(Callback):
@@ -244,9 +280,14 @@ def build_datamodule(cfg: DictConfig) -> lightning.LightningDataModule:
     """
     task = str(cfg.benchmark.get("task", "lm"))
     if task == "depth_needle":
-        from src.data_needle import DeepNeedleDataModule
+        from src.data import DeepNeedleDataModule
 
         return DeepNeedleDataModule(
+            seq_len=int(cfg.data.max_seq_len),
+            vocab_size=int(cfg.data.vocab_size),
+            start_token=int(cfg.data.start_token),
+            blank_token=int(cfg.data.blank_token),
+            output_token=int(cfg.data.output_token),
             batch_size=int(cfg.data.batch_size),
             n_eval=int(cfg.data.get("n_eval", 1000)),
             num_workers=int(cfg.data.num_workers),

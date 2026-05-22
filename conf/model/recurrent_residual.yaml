@@ -4,9 +4,11 @@
 residual_mode: recurrent_residual
 
 recurrent_residual:
-  gate_r_bias: -3.0      # Initial bias for read (reset) gate
-  gate_alpha_bias: -2.0  # Initial bias for write (update) gate
-  eps: 1e-5              # Epsilon for normalisation
+  read_gate_bias: -3.0
+  update_gate_bias: -2.0
+  gate_init_std: 0.01
+  memory_gain_init: 0.0
+  eps: 1e-5
 
 d_model: 768
 n_heads: 12

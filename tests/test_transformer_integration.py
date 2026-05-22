@@ -18,10 +18,13 @@ def base_config():
         "dropout": 0.1,
         "residual_mode": "standard",
         "recurrent_residual": {
-            "gate_r_bias": -3.0,
-            "gate_alpha_bias": -2.0,
+            "read_gate_bias": -3.0,
+            "update_gate_bias": -2.0,
+            "gate_init_std": 0.01,
+            "memory_gain_init": 0.0,
             "eps": 1e-5
-        }
+        },
+        "full_attnres": {"max_layers": 24},
     })
 
 
@@ -53,8 +56,10 @@ def test_recurrent_residual_memory_persistence(base_config):
     config.residual_mode = "recurrent_residual"
     # Add required RR config
     config.recurrent_residual = {
-        "gate_r_bias": -3.0,
-        "gate_alpha_bias": -2.0,
+        "read_gate_bias": -3.0,
+        "update_gate_bias": -2.0,
+        "gate_init_std": 0.01,
+        "memory_gain_init": 0.0,
         "eps": 1e-5
     }
 
@@ -67,3 +72,11 @@ def test_recurrent_residual_memory_persistence(base_config):
     m_init = rr_cell.get_initial_state(B, S)
     expected_m = rr_cell.m_init.view(1, 1, -1).expand(B, S, -1)
     torch.testing.assert_close(m_init, expected_m)
+
+
+def test_legacy_attnres_mode_is_rejected(base_config):
+    """Only the canonical block_attnres residual mode should be accepted."""
+    base_config.residual_mode = "attnres_block"
+    base_config.attnres_block = {"block_size": 4}
+    with pytest.raises(ValueError, match="Unsupported residual_mode"):
+        TransformerDecoder(base_config)

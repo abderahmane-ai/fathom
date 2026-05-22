@@ -98,7 +98,7 @@ $$
 \mathbf{m}_l = \mathbf{u}_l \odot \mathbf{y}_l + (\mathbf{1} - \mathbf{u}_l) \odot \mathbf{m}_{l-1}
 $$
 
-The update gate depends on the current sublayer output (content) and a learned per‑layer depth bias $\mathbf{p}_l$. Because the blend is a convex combination ($\mathbf{u}_l + (\mathbf{1} - \mathbf{u}_l) = \mathbf{1}$), each dimension of $\mathbf{m}_l$ remains bounded by the extreme values of past $\mathbf{y}$ vectors. No softmax, no competition across layers or channels—therefore no attention‑sink dynamics and no outlier amplification.
+The update gate depends on the current sublayer output (content) and a learned per‑sublayer depth bias $\mathbf{p}_l$. Because the blend is a convex combination ($\mathbf{u}_l + (\mathbf{1} - \mathbf{u}_l) = \mathbf{1}$), each dimension of $\mathbf{m}_l$ remains bounded by the extreme values of past $\mathbf{y}$ vectors. No softmax, no competition across layers or channels—therefore no attention‑sink dynamics and no outlier amplification.
 
 ---
 
@@ -132,11 +132,11 @@ The memory $\mathbf{m}_l$ is a convex combination of past $\mathbf{y}_i$, each n
 | Memory gain $\mathbf{g}_m$ | $d$ |
 | Update gate weight $\mathbf{w}_u$ | $d$ |
 | Update gate bias $\mathbf{b}_u$ | $d$ |
-| Layer position biases $\{\mathbf{p}_l\}_{l=1}^L$ | $L \cdot d$ |
+| Sublayer position biases $\{\mathbf{p}_s\}_{s=1}^S$ | $S \cdot d$ |
 | Initial memory $\mathbf{m}_0$ | $d$ |
-| **Total** | $(L + 6)d$ |
+| **Total** | $(S + 6)d$ |
 
-For a 12‑layer model with $d = 4096$, this is approximately **74k parameters**, completely independent of the main model size. The per‑layer compute overhead is $O(d)$ (element‑wise operations), with no attention, no block partitions, and no cached layer outputs.
+Here $S$ is the number of residual transitions. For a decoder layer with attention and feed‑forward sublayers, $S = 2L$. A 12‑layer model with $d = 4096$ therefore adds approximately **123k parameters**, completely independent of the main model size. The per‑sublayer compute overhead is $O(d)$ (element‑wise operations), with no attention, no block partitions, and no cached layer outputs.
 
 ---
 

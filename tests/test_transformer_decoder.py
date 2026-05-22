@@ -27,10 +27,13 @@ def config():
         "residual_mode": "standard",
         "attnres_block": {"block_size": 4},
         "recurrent_residual": {
-            "gate_r_bias": -3.0,
-            "gate_alpha_bias": -2.0,
-            "eps": 1e-5
-        }
+            "read_gate_bias": -3.0,
+            "update_gate_bias": -2.0,
+            "gate_init_std": 0.01,
+            "memory_gain_init": 0.0,
+            "eps": 1e-5,
+        },
+        "full_attnres": {"max_layers": 24},
     })
 
 

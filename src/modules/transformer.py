@@ -13,6 +13,7 @@ from typing import Any, cast
 import torch
 import torch.nn as nn
 
+from .recurrent_residual import RecurrentResidualCell
 from .transformer_layer import TransformerLayer
 
 
@@ -29,10 +30,9 @@ class TransformerDecoder(nn.Module):
             - ``vocab_size``   (int):  Vocabulary size.
             - ``dropout``      (float): Embedding / output dropout.
             - ``residual_mode`` (str): ``"standard"`` | ``"recurrent_residual"``
-              | ``"block_attnres"`` | ``"attnres_block"`` | ``"full_attnres"``.
+              | ``"block_attnres"`` | ``"full_attnres"``.
             - ``attnres_block.block_size`` (int): Required for block_attnres mode.
-            - ``recurrent_residual.gate_r_bias`` (float): Optional RR config.
-            - ``recurrent_residual.gate_alpha_bias`` (float): Optional RR config.
+            - ``recurrent_residual``: Required RR gate initialization config.
     """
 
     def __init__(self, config: Any) -> None:
@@ -44,29 +44,44 @@ class TransformerDecoder(nn.Module):
         self.pos_embeddings = nn.Embedding(config.max_seq_len, config.d_model)
         self.emb_drop = nn.Dropout(getattr(config, "dropout", 0.1))
 
-        # ── Global Recurrent Cell (Shared across layers) ──────────────────
-        if self.residual_mode == "recurrent_residual":
-            from .recurrent_residual import RecurrentResidualCell
+        if self.residual_mode not in {
+            "standard",
+            "recurrent_residual",
+            "block_attnres",
+            "full_attnres",
+        }:
+            raise ValueError(f"Unsupported residual_mode: {self.residual_mode}")
 
-            rr_cfg = getattr(config, "recurrent_residual", {})
+        # ── Global Recurrent Cell (Shared across layers) ──────────────────
+        self.rr_cell: RecurrentResidualCell | None
+        if self.residual_mode == "recurrent_residual":
+            rr_cfg = config.recurrent_residual
             self.rr_cell = RecurrentResidualCell(
                 config.d_model,
                 config.num_layers,
-                gate_r_bias=getattr(rr_cfg, "gate_r_bias", -3.0),
-                gate_alpha_bias=getattr(rr_cfg, "gate_alpha_bias", -2.0),
-                eps=getattr(rr_cfg, "eps", 1e-5),
+                read_gate_bias=rr_cfg.read_gate_bias,
+                update_gate_bias=rr_cfg.update_gate_bias,
+                eps=rr_cfg.eps,
+                gate_init_std=rr_cfg.gate_init_std,
+                memory_gain_init=rr_cfg.memory_gain_init,
             )
         else:
             self.rr_cell = None
 
-        self.layers: nn.ModuleList = nn.ModuleList(
-            [TransformerLayer(config) for _ in range(config.num_layers)]
-        )
+        if self.residual_mode == "full_attnres":
+            max_full_layers = int(config.full_attnres.max_layers)
+            if config.num_layers > max_full_layers:
+                raise ValueError(
+                    "full_attnres stores every depth state and is limited to "
+                    f"{max_full_layers} layers by config."
+                )
 
-        # If shared RR cell is used, inject it into all layers.
-        if self.rr_cell is not None:
-            for layer in self.layers:
-                cast(TransformerLayer, layer).rr_cell = self.rr_cell
+        self.layers: nn.ModuleList = nn.ModuleList(
+            [
+                TransformerLayer(config, rr_cell=self.rr_cell)
+                for _ in range(config.num_layers)
+            ]
+        )
 
         self.ln_f = nn.LayerNorm(config.d_model)
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
@@ -81,19 +96,14 @@ class TransformerDecoder(nn.Module):
     # ------------------------------------------------------------------
 
     def _init_weights(self) -> None:
-        """Initialise weights following GPT-2 and DeepNorm conventions.
+        """Initialise weights following GPT-style Pre-LN conventions.
 
         - Embeddings: N(0, 0.02).
         - Linear layers: N(0, 0.02), bias → 0.
         - LayerNorm: weight → 1, bias → 0.
-        - Standard/AttnRes: Residual projections scaled by 1/√(2·num_layers).
-        - Recurrent Residual: Residual projections scaled by DeepNorm beta = (8N)^-0.25.
+        - Residual projections: scaled by 1/√(2·num_layers).
         """
         num_layers = len(self.layers)
-        num_sublayers = num_layers * 2
-
-        # DeepNorm beta constant
-        beta = (8.0 * num_sublayers) ** -0.25
 
         for module in self.modules():
             if isinstance(module, nn.Linear):
@@ -106,23 +116,11 @@ class TransformerDecoder(nn.Module):
                 nn.init.ones_(module.weight)
                 nn.init.zeros_(module.bias)
 
-        # Scale residual projection weights (attn.proj, ffn.w2).
-        if self.residual_mode == "recurrent_residual":
-            # DeepNorm initialization
-            for layer in self.layers:
-                layer_typed = cast(TransformerLayer, layer)
-                nn.init.normal_(layer_typed.attn.proj.weight, mean=0.0, std=0.02 * beta)
-                nn.init.normal_(layer_typed.ffn.w2.weight, mean=0.0, std=0.02 * beta)
-
-            # Also scale the shared memory projection
-            nn.init.normal_(self.rr_cell.proj_m.weight, mean=0.0, std=0.02 * beta)
-        else:
-            # Megatron-LM / Standard initialization
-            scale = (2.0 * num_layers) ** -0.5
-            for layer in self.layers:
-                layer_typed = cast(TransformerLayer, layer)
-                nn.init.normal_(layer_typed.attn.proj.weight, mean=0.0, std=0.02 * scale)
-                nn.init.normal_(layer_typed.ffn.w2.weight, mean=0.0, std=0.02 * scale)
+        scale = (2.0 * num_layers) ** -0.5
+        for layer in self.layers:
+            layer_typed = cast(TransformerLayer, layer)
+            nn.init.normal_(layer_typed.attn.proj.weight, mean=0.0, std=0.02 * scale)
+            nn.init.normal_(layer_typed.ffn.w2.weight, mean=0.0, std=0.02 * scale)
 
     # ------------------------------------------------------------------
     # Forward
@@ -158,7 +156,7 @@ class TransformerDecoder(nn.Module):
                 layer_typed = cast(TransformerLayer, layer)
                 h, m = layer_typed(h, idx, m)
 
-        elif self.residual_mode in {"attnres_block", "block_attnres"}:
+        elif self.residual_mode == "block_attnres":
             # Block-0 = token embedding (lets every layer attend to raw input).
             blocks: list[torch.Tensor] = [h]
             partial_block: torch.Tensor = h

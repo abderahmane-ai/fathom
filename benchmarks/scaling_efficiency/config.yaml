@@ -14,8 +14,10 @@ model:
   vocab_size: 50257
   dropout: 0.1
   recurrent_residual:
-    gate_r_bias: -3.0
-    gate_alpha_bias: -2.0
+    read_gate_bias: -3.0
+    update_gate_bias: -2.0
+    gate_init_std: 0.01
+    memory_gain_init: 0.0
     eps: 1.0e-5
   attnres_block:
     block_size: 6
@@ -41,6 +43,8 @@ data:
   max_seq_len: 128
   batch_size: 96
   num_workers: 4
+  tokenization_num_proc: 4
+  packed_cache_dir: null
   train_split: train[:1%]
   val_split: validation[:1%]
   test_split: validation[:1%]
@@ -53,6 +57,9 @@ trainer:
   max_epochs: -1
   matmul_precision: high
   gradient_clip_val: 1.0
+  scheduler:
+    warmup_steps: 200
+    min_lr_ratio: 0.1
   optimizer:
     lr: 8.0e-4
     weight_decay: 0.1
@@ -73,4 +80,3 @@ benchmark:
 wandb:
   enabled: true
   project: recurrent-residuals
-

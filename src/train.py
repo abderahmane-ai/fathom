@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from typing import Any
 
 import hydra
@@ -67,6 +68,21 @@ class LanguageModel(L.LightningModule):
         self.log("test/loss", loss, on_epoch=True, sync_dist=True)
         self.log("test/ppl", torch.exp(loss), on_epoch=True, sync_dist=True)
 
+    def on_before_optimizer_step(self, optimizer: torch.optim.Optimizer) -> None:
+        """Log global gradient norm before each optimizer step.
+
+        Args:
+            optimizer: Optimizer about to step.
+
+        Returns:
+            None.
+        """
+        squared_norm = torch.zeros((), device=self.device)
+        for parameter in self.parameters():
+            if parameter.grad is not None:
+                squared_norm = squared_norm + parameter.grad.detach().pow(2).sum()
+        self.log("grad/global_norm", squared_norm.sqrt(), on_step=True)
+
     def configure_optimizers(self) -> dict[str, Any]:
         """Configures AdamW with weight decay filtering and cosine decay."""
         opt_cfg = self.trainer_cfg.optimizer
@@ -111,6 +127,34 @@ class LanguageModel(L.LightningModule):
         }
 
 
+def build_logger(cfg: DictConfig) -> Any:
+    """Build the configured Lightning logger.
+
+    Args:
+        cfg: Root Hydra config.
+
+    Returns:
+        WandB logger when configured and available, otherwise CSV logger.
+    """
+    logger_cfg = cfg.trainer.logger
+    run_name = f"{cfg.model.residual_mode}_d{cfg.model.d_model}_L{cfg.model.num_layers}"
+    if logger_cfg.name == "wandb":
+        try:
+            from lightning.pytorch.loggers import WandbLogger
+
+            return WandbLogger(
+                project=logger_cfg.project,
+                name=run_name,
+                save_dir=logger_cfg.save_dir,
+                offline=bool(logger_cfg.offline),
+                config=OmegaConf.to_container(cfg, resolve=True),
+            )
+        except Exception:
+            log.exception("WandB logger unavailable; falling back to CSVLogger.")
+
+    return CSVLogger(save_dir=logger_cfg.save_dir, name=run_name)
+
+
 @hydra.main(config_path="../conf", config_name="config", version_base="1.3")
 def main(cfg: DictConfig) -> None:
     """System entry point for training and evaluation."""
@@ -130,19 +174,20 @@ def main(cfg: DictConfig) -> None:
         ),
     ]
 
-    csv_logger = CSVLogger(
-        save_dir="logs",
-        name=f"{cfg.model.residual_mode}_d{cfg.model.d_model}_L{cfg.model.num_layers}",
-    )
+    logger = build_logger(cfg)
 
     trainer = L.Trainer(
+        accelerator=cfg.trainer.accelerator,
+        devices=cfg.trainer.devices,
+        strategy=cfg.trainer.strategy,
+        num_nodes=cfg.trainer.num_nodes,
         max_epochs=cfg.trainer.max_epochs,
         precision=cfg.trainer.precision,
         accumulate_grad_batches=cfg.trainer.accumulate_grad_batches,
         gradient_clip_val=cfg.trainer.gradient_clip_val,
         log_every_n_steps=cfg.trainer.log_every_n_steps,
         val_check_interval=cfg.trainer.val_check_interval,
-        logger=csv_logger,
+        logger=logger,
         callbacks=callbacks,
         deterministic=True,
     )

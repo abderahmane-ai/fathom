@@ -7,6 +7,16 @@ accumulate_grad_batches: 4     # effective batch = batch_size * 4
 gradient_clip_val: 1.0
 log_every_n_steps: 50
 val_check_interval: 0.25       # validate 4× per epoch
+accelerator: auto
+devices: auto
+strategy: auto
+num_nodes: 1
+
+logger:
+  name: wandb
+  project: recurrent-residuals
+  save_dir: logs
+  offline: false
 
 optimizer:
   name: adamw
