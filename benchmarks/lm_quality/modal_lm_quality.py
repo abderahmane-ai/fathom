@@ -79,7 +79,6 @@ def _run_mode(residual_mode: str, run_id: str) -> None:
     gpu="A100",
     timeout=60 * 60 * 10,
     retries=modal.Retries(max_retries=2, backoff_coefficient=2.0, initial_delay=30.0),
-    secrets=[modal.Secret.from_name("wandb-secret")],
     volumes={ARTIFACT_MOUNT: artifact_volume},
 )
 def run_standard(run_id: str) -> None:
@@ -99,7 +98,6 @@ def run_standard(run_id: str) -> None:
     gpu="A100",
     timeout=60 * 60 * 10,
     retries=modal.Retries(max_retries=2, backoff_coefficient=2.0, initial_delay=30.0),
-    secrets=[modal.Secret.from_name("wandb-secret")],
     volumes={ARTIFACT_MOUNT: artifact_volume},
 )
 def run_recurrent_residual(run_id: str) -> None:
@@ -119,7 +117,6 @@ def run_recurrent_residual(run_id: str) -> None:
     gpu="A100",
     timeout=60 * 60 * 10,
     retries=modal.Retries(max_retries=2, backoff_coefficient=2.0, initial_delay=30.0),
-    secrets=[modal.Secret.from_name("wandb-secret")],
     volumes={ARTIFACT_MOUNT: artifact_volume},
 )
 def run_block_attnres(run_id: str) -> None:
