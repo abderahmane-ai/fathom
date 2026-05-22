@@ -73,3 +73,82 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     tmp.replace(path)
 
+
+def compute_dps_closed_form(
+    xtx: torch.Tensor,
+    xty: torch.Tensor,
+    yty: torch.Tensor,
+    target_variance: torch.Tensor,
+    lambda_val: float = 1.0,
+) -> float:
+    """Compute Depth Preservation Score (DPS) via closed-form Ridge Regression.
+
+    This function solves the ridge regression problem to find the linear mapping
+    from the source states to the target states using pre-accumulated covariance
+    matrices, and then calculates the R-squared value.
+
+    Args:
+        xtx: The accumulated covariance matrix [X, 1]^T [X, 1] of shape (d+1, d+1).
+        xty: The accumulated cross-covariance matrix [X, 1]^T Y of shape (d+1, d).
+        yty: The accumulated sum of squares of Y (Tr(Y^T Y)).
+        target_variance: The accumulated sum of squared differences of the target
+            from its mean, sum( ||a_k^(i) - mean(a_k)||^2 ).
+        lambda_val: Ridge regularization strength.
+
+    Returns:
+        The Depth Preservation Score (DPS) as a float (R-squared).
+    """
+    d = xtx.size(0) - 1
+
+    # Add ridge penalty to the diagonal (excluding the bias term at the end)
+    reg_matrix = torch.eye(d + 1, device=xtx.device, dtype=xtx.dtype)
+    reg_matrix[-1, -1] = 0.0 # Do not penalize the bias
+
+    # Solve for W_tilde = [W; b]
+    # W_tilde = (X^T X + lambda I)^{-1} X^T Y
+    w_tilde = torch.linalg.solve(xtx + lambda_val * reg_matrix, xty)
+
+    # Calculate Residual Sum of Squares (RSS) using the identity:
+    # RSS = Tr(Y^T Y) - 2 * Tr(W_tilde^T X^T Y) + Tr(W_tilde^T X^T X W_tilde)
+    rss_term1 = yty
+    rss_term2 = -2.0 * torch.trace(w_tilde.T @ xty)
+    rss_term3 = torch.trace(w_tilde.T @ xtx @ w_tilde)
+    rss = rss_term1 + rss_term2 + rss_term3
+
+    # Calculate R-squared
+    dps = 1.0 - (rss / target_variance)
+
+    return float(dps.item())
+
+
+def calculate_dri(dps_scores: list[float]) -> float:
+    """Calculate the Dilution Resistance Index (DRI).
+
+    The DRI is the average of the DPS scores over the first half of the network.
+
+    Args:
+        dps_scores: List of DPS scores, ordered by layer depth (1 to L-1).
+
+    Returns:
+        The DRI scalar value.
+    """
+    if not dps_scores:
+        return 0.0
+
+    # L is total layers. dps_scores contains L-1 elements (layer 1 to L-1).
+    # So total layers L = len(dps_scores) + 1.
+    l_total = len(dps_scores) + 1
+    half_l = l_total // 2
+
+    if half_l == 0:
+        return 0.0
+
+    # Average over the first half (layers 1 to floor(L/2))
+    # Indices in dps_scores are 0-based, so index 0 is layer 1.
+    # We want indices 0 up to half_l - 1.
+    first_half_scores = dps_scores[:half_l]
+    dri = sum(first_half_scores) / len(first_half_scores)
+
+    return dri
+
+

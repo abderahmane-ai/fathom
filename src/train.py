@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 from typing import Any
 
 import hydra
@@ -83,6 +82,7 @@ class LanguageModel(L.LightningModule):
                 squared_norm = squared_norm + parameter.grad.detach().pow(2).sum()
         self.log("grad/global_norm", squared_norm.sqrt(), on_step=True)
 
+    # pyrefly: ignore [bad-override]
     def configure_optimizers(self) -> dict[str, Any]:
         """Configures AdamW with weight decay filtering and cosine decay."""
         opt_cfg = self.trainer_cfg.optimizer
@@ -188,6 +188,7 @@ def main(cfg: DictConfig) -> None:
         log_every_n_steps=cfg.trainer.log_every_n_steps,
         val_check_interval=cfg.trainer.val_check_interval,
         logger=logger,
+        # pyrefly: ignore [bad-argument-type]
         callbacks=callbacks,
         deterministic=True,
     )
