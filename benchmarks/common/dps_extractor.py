@@ -37,8 +37,13 @@ class DPSEvaluator:
         self.xty: torch.Tensor | None = None
         self.yty: torch.Tensor | None = None
 
+        # Accumulators for GPS (Gradient Preservation Score)
+        self.xty_gps: torch.Tensor | None = None
+        self.yty_gps: torch.Tensor | None = None
+
         # Accumulators for variance calculation (sum(y) and sum(y^2))
         self.sum_y: torch.Tensor | None = None
+        self.sum_y_gps: torch.Tensor | None = None
 
         # Accumulator for cosine dissimilarity
         self.sum_cos_dissim: float = 0.0
@@ -105,10 +110,18 @@ class DPSEvaluator:
         self.yty = torch.zeros((), device=device, dtype=torch.float32)
         self.sum_y = torch.zeros((d,), device=device, dtype=torch.float32)
 
-    def process_batch(self) -> None:
+        self.xty_gps = torch.zeros((d + 1, d), device=device, dtype=torch.float32)
+        self.yty_gps = torch.zeros((), device=device, dtype=torch.float32)
+        self.sum_y_gps = torch.zeros((d,), device=device, dtype=torch.float32)
+
+    def process_batch(self, targets: torch.Tensor | None = None) -> None:
         """Process the captured activations for the current batch and update accumulators.
 
         This must be called immediately after a forward pass before the next one starts.
+
+        Args:
+            targets: Optional ground-truth next-token targets for GPS evaluation.
+                Shape: (batch, seq) or flattened to matching token count.
         """
         if self._current_target is None or self._current_source is None:
             raise RuntimeError(
@@ -138,7 +151,7 @@ class DPSEvaluator:
         ones = torch.ones((batch_n, 1), device=device, dtype=source.dtype)
         x_tilde = torch.cat([source, ones], dim=1)
 
-        # 3. Update streaming covariance matrices
+        # 3. Update streaming covariance matrices for DPS
         self.xtx += x_tilde.T @ x_tilde
         self.xty += x_tilde.T @ y
 
@@ -148,7 +161,36 @@ class DPSEvaluator:
         # 4. Update variance accumulators for Y
         self.sum_y += torch.sum(y, dim=0)
 
-        # 5. Update cosine dissimilarity
+        # 5. Update GPS accumulators if targets are provided
+        if targets is not None:
+            # Locate the language modeling head
+            head = None
+            if hasattr(self.model, "lm_head"):
+                head = self.model.lm_head
+            elif hasattr(self.model, "model") and hasattr(self.model.model, "lm_head"):
+                head = self.model.model.lm_head
+            else:
+                raise AttributeError("Could not find lm_head in the model to compute early gradients.")
+
+            with torch.no_grad():
+                # Compute early logits using LayerNorm-normalized activation y (which is a_k)
+                early_logits = head(y)
+                probs = torch.softmax(early_logits, dim=-1)
+
+                # Flatten targets and compute probability difference: e = probs - one_hot(targets)
+                targets_flat = targets.reshape(-1)
+                e = probs.clone()
+                e[torch.arange(batch_n, device=device), targets_flat] -= 1.0
+
+                # Project error vector back using the head weights to get early gradient g
+                g = e @ head.weight  # shape: (batch_n, d)
+
+                # Update streaming covariance matrices for GPS
+                self.xty_gps += x_tilde.T @ g
+                self.yty_gps += torch.sum(g**2)
+                self.sum_y_gps += torch.sum(g, dim=0)
+
+        # 6. Update cosine dissimilarity
         # dissim = 1 - cosine_similarity
         cos_sim = torch.nn.functional.cosine_similarity(target, source, dim=-1)
         self.sum_cos_dissim += float(torch.sum(1.0 - cos_sim).item())
@@ -160,7 +202,7 @@ class DPSEvaluator:
         self._current_source = None
 
     def get_results(self) -> dict[str, Any]:
-        """Return the accumulated matrices needed for DPS computation."""
+        """Return the accumulated matrices needed for DPS and GPS computation."""
         if self.n_tokens == 0 or self.xtx is None:
             raise RuntimeError("No tokens processed yet.")
 
@@ -172,7 +214,7 @@ class DPSEvaluator:
         correction = self.n_tokens * torch.sum(mean_y**2)
         target_variance = self.yty - correction
 
-        return {
+        res = {
             "xtx": self.xtx,
             "xty": self.xty,
             "yty": self.yty,
@@ -180,3 +222,16 @@ class DPSEvaluator:
             "mean_dissim": self.sum_cos_dissim / self.n_tokens,
             "n_tokens": self.n_tokens,
         }
+
+        # If GPS accumulators were updated, calculate its target variance and include them
+        if self.yty_gps is not None and float(self.yty_gps.item()) > 0:
+            mean_y_gps = self.sum_y_gps / self.n_tokens
+            correction_gps = self.n_tokens * torch.sum(mean_y_gps**2)
+            target_variance_gps = self.yty_gps - correction_gps
+            res.update({
+                "xty_gps": self.xty_gps,
+                "yty_gps": self.yty_gps,
+                "target_variance_gps": target_variance_gps,
+            })
+
+        return res

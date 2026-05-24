@@ -59,7 +59,7 @@ def _prepare_remote() -> None:
 def _run_dps_evaluation(cfg: DictConfig, residual_mode: str, run_id: str) -> None:
     """Run the DPS evaluation logic."""
     from benchmarks.common.dps_extractor import DPSEvaluator
-    from benchmarks.common.metrics import calculate_dri, compute_dps_closed_form
+    from benchmarks.common.metrics import calculate_dri, calculate_gpi, compute_dps_closed_form
     from src.data import LanguageModelDataModule
     from src.modules import TransformerDecoder
 
@@ -82,10 +82,11 @@ def _run_dps_evaluation(cfg: DictConfig, residual_mode: str, run_id: str) -> Non
     final_norm_name = str(cfg.benchmark.get("final_norm_name", "norm"))
 
     dps_scores = []
+    gps_scores = []
 
     with torch.no_grad():
         for k in target_layers:
-            log.info(f"Evaluating DPS for layer {k} / {L - 1}")
+            log.info(f"Evaluating DPS/GPS for layer {k} / {L - 1}")
             evaluator = DPSEvaluator(model, layer_idx=k, final_norm_name=final_norm_name)
 
             tokens_processed = 0
@@ -93,20 +94,22 @@ def _run_dps_evaluation(cfg: DictConfig, residual_mode: str, run_id: str) -> Non
                 if tokens_processed >= n_target_tokens:
                     break
 
-                # Move to device and shape properly
-                input_ids = batch.to(device)
+                # Causal next-token shift: inputs are tokens 0 to S-2, targets are tokens 1 to S-1
+                input_ids = batch[:, :-1].to(device)
+                targets = batch[:, 1:].to(device)
 
                 # Forward pass
                 _ = model(input_ids)
 
                 # Accumulate statistics
-                evaluator.process_batch()
+                evaluator.process_batch(targets=targets)
 
                 tokens_processed += input_ids.numel()
 
             res = evaluator.get_results()
             evaluator.remove_hooks()
 
+            # 1. Compute DPS (Depth Preservation Score)
             dps = compute_dps_closed_form(
                 xtx=res["xtx"],
                 xty=res["xty"],
@@ -115,10 +118,24 @@ def _run_dps_evaluation(cfg: DictConfig, residual_mode: str, run_id: str) -> Non
                 lambda_val=lambda_val,
             )
             dps_scores.append(dps)
-            log.info(f"Layer {k} DPS: {dps:.4f} (Dissim: {res['mean_dissim']:.4f})")
+
+            # 2. Compute GPS (Gradient Preservation Score)
+            gps = 0.0
+            if "xty_gps" in res:
+                gps = compute_dps_closed_form(
+                    xtx=res["xtx"],
+                    xty=res["xty_gps"],
+                    yty=res["yty_gps"],
+                    target_variance=res["target_variance_gps"],
+                    lambda_val=lambda_val,
+                )
+            gps_scores.append(gps)
+
+            log.info(f"Layer {k} DPS: {dps:.4f} | GPS: {gps:.4f} (Dissim: {res['mean_dissim']:.4f})")
 
     dri = calculate_dri(dps_scores)
-    log.info(f"Final DRI for {residual_mode}: {dri:.4f}")
+    gpi = calculate_gpi(gps_scores)
+    log.info(f"Final DRI for {residual_mode}: {dri:.4f} | GPI: {gpi:.4f}")
 
     # Save results to artifact volume
     output_dir = Path(ARTIFACT_MOUNT) / "results" / BENCHMARK_NAME / run_id
@@ -128,7 +145,9 @@ def _run_dps_evaluation(cfg: DictConfig, residual_mode: str, run_id: str) -> Non
         "residual_mode": residual_mode,
         "run_id": run_id,
         "dps_scores": dps_scores,
+        "gps_scores": gps_scores,
         "dri": dri,
+        "gpi": gpi,
         "n_tokens": n_target_tokens,
     }
 

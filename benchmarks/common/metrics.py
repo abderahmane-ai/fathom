@@ -151,3 +151,33 @@ def calculate_dri(dps_scores: list[float]) -> float:
     dri = sum(first_half_scores) / len(first_half_scores)
 
     return dri
+
+
+def calculate_gpi(gps_scores: list[float]) -> float:
+    """Calculate the Gradient Preservation Index (GPI).
+
+    The GPI is the average of the GPS scores over the first half of the network.
+
+    Args:
+        gps_scores: List of GPS scores, ordered by layer depth (1 to L-1).
+
+    Returns:
+        The GPI scalar value.
+    """
+    if not gps_scores:
+        return 0.0
+
+    # L is total layers. gps_scores contains L-1 elements (layer 1 to L-1).
+    l_total = len(gps_scores) + 1
+    half_l = l_total // 2
+
+    if half_l == 0:
+        return 0.0
+
+    # Average over the first half (layers 1 to floor(L/2))
+    # Indices in gps_scores are 0-based, so index 0 is layer 1.
+    # We want indices 0 up to half_l - 1.
+    first_half_scores = gps_scores[:half_l]
+    gpi = sum(first_half_scores) / len(first_half_scores)
+
+    return gpi

@@ -155,6 +155,75 @@ Here $S$ is the number of residual transitions. For a decoder layer with attenti
 
 ---
 
-## 8. Conclusion
+## 8. Evaluation Metrics: Probing Representation Dynamics
+
+To systematically evaluate whether a residual connection prevents information loss across depth, we define two complementary closed-form probing metrics. Rather than training auxiliary neural probes (which introduces optimization noise and hyperparameters), both metrics are computed in a single pass using Ridge Regression in closed form.
+
+### 8.1 Depth Preservation Score (DPS) & Dilution Resistance Index (DRI)
+
+The **Depth Preservation Score (DPS)** measures the degree to which the *entirety* of an intermediate representation is linearly accessible from the final hidden state.
+
+Let $\mathbf{a}_k^{(i)} \in \mathbb{R}^d$ be the parameter-free normalized activation of layer $k$ for token $i$, and let $\mathbf{s}^{(i)} \in \mathbb{R}^d$ be the final hidden state before the LM head. We fit a linear map $(\mathbf{W}, \mathbf{b})$ to reconstruct $\mathbf{a}_k$ from $\mathbf{s}$:
+
+$$
+\mathrm{DPS}(k) = 1 - \frac{\sum_{i=1}^N \|\mathbf{a}_k^{(i)} - (\mathbf{W}\mathbf{s}^{(i)} + \mathbf{b})\|^2}{\sum_{i=1}^N \|\mathbf{a}_k^{(i)} - \bar{\mathbf{a}}_k\|^2}
+$$
+
+The projection parameters $\mathbf{W} \in \mathbb{R}^{d \times d}$ and $\mathbf{b} \in \mathbb{R}^d$ are solved in closed form using Ridge Regression with regularizer $\lambda = 1.0$. 
+
+The **Dilution Resistance Index (DRI)** is the average DPS over the first half of the network, summarizing how well early information is preserved:
+
+$$
+\mathrm{DRI} = \frac{1}{\lfloor L/2 \rfloor} \sum_{k=1}^{\lfloor L/2 \rfloor} \mathrm{DPS}(k)
+$$
+
+> [!NOTE]
+> **Linearity Bound**: DPS is a *lower bound* on information preservation. A low DPS means the representation is not linearly accessible, though it may still be preserved non-linearly.
+
+---
+
+### 8.2 Gradient Preservation Score (GPS) & Gradient Preservation Index (GPI)
+
+DPS measures whether *all* early layer information is preserved. However, a healthy deep network should abstract away low-level features. The **Gradient Preservation Score (GPS)** measures whether the *task-relevant* subspace of the early layer is preserved.
+
+If we apply the LM head directly to the early representation $\mathbf{a}_k$, we obtain early logits and an early loss. The gradient of this early loss points in the direction that would most improve the prediction at layer $k$. If this corrective task direction is recoverable from the final state $\mathbf{s}$, the final state still carries the task-relevant information.
+
+For each token $i$, the implicit early gradient $\mathbf{g}_k^{(i)}$ is defined as:
+
+$$
+\mathbf{g}_k^{(i)} = \mathbf{W}_{\text{head}}^\top (\text{softmax}(\mathbf{a}_k^{(i)} \mathbf{W}_{\text{head}}) - \mathbf{y}^{(i)}) \in \mathbb{R}^d
+$$
+
+where $\mathbf{W}_{\text{head}} \in \mathbb{R}^{d \times V}$ are the LM head weights, and $\mathbf{y}^{(i)}$ is the one-hot target token label.
+
+Using closed-form Ridge Regression ($\lambda = 1.0$), we solve for the mapping $(\mathbf{W}_g, \mathbf{b}_g)$ to reconstruct $\mathbf{g}_k$ from $\mathbf{s}$:
+
+$$
+\mathrm{GPS}(k) = 1 - \frac{\sum_{i=1}^N \|\mathbf{g}_k^{(i)} - (\mathbf{W}_g \mathbf{s}^{(i)} + \mathbf{b}_g)\|^2}{\sum_{i=1}^N \|\mathbf{g}_k^{(i)} - \bar{\mathbf{g}}_k\|^2}
+$$
+
+The **Gradient Preservation Index (GPI)** is the average GPS over the first half of the network:
+
+$$
+\mathrm{GPI} = \frac{1}{\lfloor L/2 \rfloor} \sum_{k=1}^{\lfloor L/2 \rfloor} \mathrm{GPS}(k)
+$$
+
+---
+
+### 8.3 The Golden Pairing Rule
+
+Neither metric is sufficient on its own. We evaluate architectures using the triple index **(DRI, GPI, Perplexity)**:
+
+| DRI | GPI | Perplexity vs. Baseline | Interpretation |
+| :--- | :--- | :--- | :--- |
+| High | High | Better or Equal | **Successful preservation**: Task-relevant information is preserved linearly, leading to equal or improved performance. |
+| High | Low | Better or Equal | **Healthy abstraction**: The model discards task-irrelevant raw details in later layers in favor of higher-level semantic features. |
+| High | Low | Worse | **Cluttering**: The residual mechanism forces the model to retain raw features that clutter the representation and harm task performance. |
+| Low | Low | Worse | **Classic dilution**: Crucial early-layer information is diluted and lost, leading to degraded performance. |
+| Low | High | - | **Targeted preservation**: The raw representation is heavily transformed/compressed, but the specific task-relevant gradient direction remains linearly readable. |
+
+---
+
+## 9. Conclusion
 
 Recurrent Residuals provide a scalable, $O(d)$ solution to the information dilution problem in deep Transformers. By integrating gated working memory with a principled initialisation protocol, the architecture enables the persistence of early‑layer signals through hundreds of layers without the quadratic memory costs and stability risks associated with full attention‑over‑depth mechanisms. The design introduces no new hyperparameters, requires no special normalisation schemes beyond standard Pre‑LN, and can be dropped into any Transformer as a direct replacement for the vanilla residual connection.
