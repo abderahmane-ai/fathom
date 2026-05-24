@@ -150,6 +150,7 @@ class RecurrentResidualCell(nn.Module):
         m: Float[torch.Tensor, "batch seq d_model"],
         layer_idx: int,
         sublayer: int = 0,
+        h_norm: Float[torch.Tensor, "batch seq d_model"] | None = None,
     ) -> tuple[Float[torch.Tensor, "batch seq d_model"], Float[torch.Tensor, "batch seq d_model"]]:
         """Compute one recurrent residual transition.
 
@@ -159,6 +160,7 @@ class RecurrentResidualCell(nn.Module):
             m: Memory state entering the sublayer, shape ``(B, S, d_model)``.
             layer_idx: Zero-based transformer layer index.
             sublayer: ``0`` for attention and ``1`` for FFN.
+            h_norm: Optional pre-computed normalized representation of ``h_prev``.
 
         Returns:
             Tuple ``(h_new, m_new)`` after read and update.
@@ -169,7 +171,8 @@ class RecurrentResidualCell(nn.Module):
         if h_prev.shape != y.shape or h_prev.shape != m.shape:
             raise ValueError("h_prev, y, and m must have identical shapes.")
 
-        h_norm = F.layer_norm(h_prev, (self.d_model,), eps=self.eps)
+        if h_norm is None:
+            h_norm = F.layer_norm(h_prev, (self.d_model,), eps=self.eps)
         read_gate = torch.sigmoid(self.read_weight * h_norm + self.read_bias)
         memory_read = self.memory_gain * self.memory_norm(m)
         h_new = h_prev + y + read_gate * memory_read

@@ -103,24 +103,28 @@ class TransformerLayer(nn.Module):
             raise ValueError("Use the Attention Residual forward path for this residual mode.")
 
         # ── Attention sublayer ────────────────────────────────────────────
-        y_attn = self.attn(self.ln_1(x))
+        x_norm = self.ln_1(x)
+        y_attn = self.attn(x_norm)
 
         if self.residual_mode == "standard":
             h_mid = x + y_attn
             m_mid = None
         else:  # recurrent_residual
             assert m is not None, "Memory state m is required for RR mode."
-            h_mid, m_mid = self.rr_cell(x, y_attn, m, layer_idx, sublayer=0)
+            # pyrefly: ignore [not-callable]
+            h_mid, m_mid = self.rr_cell(x, y_attn, m, layer_idx, sublayer=0, h_norm=x_norm)
 
         # ── FFN sublayer ──────────────────────────────────────────────────
-        y_ffn = self.ffn(self.ln_2(h_mid))
+        h_norm = self.ln_2(h_mid)
+        y_ffn = self.ffn(h_norm)
 
         if self.residual_mode == "standard":
             h_new = h_mid + y_ffn
             m_new = None
         else:
             assert m_mid is not None
-            h_new, m_new = self.rr_cell(h_mid, y_ffn, m_mid, layer_idx, sublayer=1)
+            # pyrefly: ignore [not-callable]
+            h_new, m_new = self.rr_cell(h_mid, y_ffn, m_mid, layer_idx, sublayer=1, h_norm=h_norm)
 
         return h_new, m_new
 
