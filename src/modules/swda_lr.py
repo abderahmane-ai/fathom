@@ -15,7 +15,6 @@ import torch.nn.functional as F
 from beartype import beartype
 from jaxtyping import Float, jaxtyped
 
-
 class RMSNorm(nn.Module):
     """Parameter-free root mean square normalization.
 
@@ -41,7 +40,6 @@ class RMSNorm(nn.Module):
         variance = x.pow(2).mean(dim=-1, keepdim=True)
         x = x * torch.rsqrt(variance + self.eps)
         return self.scale * x
-
 
 class SWDALRCell(nn.Module):
     """Sliding-Window Depth Attention with Low-Rank History (SWDA-LR) cell.
@@ -92,7 +90,7 @@ class SWDALRCell(nn.Module):
         self.r_head = rank // n_heads
         self.d_head = self.v_dim // n_heads
 
-        # 9. Fused Read and Write Gate parameters (Row 0: Read, Row 1: Write)
+        # Fused Read and Write Gate parameters (Row 0: Read, Row 1: Write)
         self.gate_weights = nn.Parameter(torch.empty(2, d_model))
         self.gate_biases = nn.Parameter(torch.empty(2, d_model))
 
@@ -119,20 +117,20 @@ class SWDALRCell(nn.Module):
         self.q_local_proj = nn.Linear(d_model, d_model, bias=False)
         self.local_norm = RMSNorm(d_model, eps=eps)
 
-        # 7. RMSNorm for input path
+        # RMSNorm for input path
         self.h_norm = RMSNorm(d_model, eps=eps)
 
         # Relative Depth Bias for FIFO attention
         self.fifo_depth_bias = nn.Parameter(torch.zeros(window_size))
 
-        # 6. Register the arange mask as a non-persistent buffer
+        # Register the arange mask as a non-persistent buffer
         self.register_buffer(
             "window_indices",
             torch.arange(window_size).view(1, 1, -1),
             persistent=False,
         )
 
-        # 1. Fused Deep Projections (MLA-inspired)
+        # Fused Deep Projections (MLA-inspired)
         self.kv_deep_proj = nn.Linear(d_model, rank + self.v_dim, bias=False)
         self.q_deep_proj = nn.Linear(d_model, rank, bias=False)
         self.deep_norm = RMSNorm(self.v_dim, eps=eps)
@@ -230,12 +228,12 @@ class SWDALRCell(nn.Module):
         position = self._sublayer_position(layer_idx, sublayer)
 
         if h_norm is None:
-            # 7. Use custom RMSNorm
+            # Use custom RMSNorm
             h_norm = self.h_norm(h_prev)
 
         B, S, d = h_prev.shape
 
-        # 9. Fused Read/Write Gates: Stack inputs and evaluate in one call
+        # Fused Read/Write Gates: Stack inputs and evaluate in one call
         gate_inputs = torch.stack([h_norm, y], dim=0)
         gates = torch.sigmoid(
             gate_inputs * self.gate_weights.view(2, 1, 1, -1) + self.gate_biases.view(2, 1, 1, -1)
@@ -243,16 +241,16 @@ class SWDALRCell(nn.Module):
         read_gate, write_gate = gates[0], gates[1]
         self.last_read_gate = read_gate.detach().mean()
 
-        # 2. Local FIFO sliding window attention
+        # Local FIFO sliding window attention
         write_idx = fifo_idx % self.window_size
         
         # Clone buffers to prevent autograd in-place modification error
         fifo_buf = fifo_buf.clone()
         fifo_norm_buf = fifo_norm_buf.clone()
         
-        # 4. In-place FIFO write
+        # In-place FIFO write
         fifo_buf[:, :, write_idx, :] = y.to(fifo_buf.dtype)
-        # 3. Cache FIFO norm_buf
+        # Cache FIFO norm_buf
         fifo_norm_buf[:, :, write_idx, :] = self.local_norm(y).to(fifo_norm_buf.dtype)
         
         next_idx = fifo_idx + 1
@@ -260,7 +258,7 @@ class SWDALRCell(nn.Module):
 
         q_local = self.q_local_proj(y)  # shape: (B, S, d)
 
-        # 10. Matmul-based attention instead of einsum
+        # Matmul-based attention instead of einsum
         logits = torch.matmul(keys_local, q_local.unsqueeze(-1)).squeeze(-1)  # shape: (B, S, W)
         logits = logits / math.sqrt(self.d_model)
         logits = logits + self.fifo_depth_bias.view(1, 1, -1)
@@ -273,10 +271,10 @@ class SWDALRCell(nn.Module):
 
         weights = torch.softmax(logits, dim=-1)
 
-        # 10. Matmul-based context aggregation instead of einsum
+        # Matmul-based context aggregation instead of einsum
         c_local = torch.matmul(weights.unsqueeze(-2), fifo_buf).squeeze(-2)  # shape: (B, S, d)
 
-        # 3. Deep multi-head low-rank history retrieval (fused K, V projection; separate Q projection)
+        # Deep multi-head low-rank history retrieval (fused K, V projection; separate Q projection)
         kv = self.kv_deep_proj(y)
         K, V = kv.split([self.rank, self.v_dim], dim=-1)
         Q = self.q_deep_proj(h_norm)
@@ -321,10 +319,10 @@ class SWDALRCell(nn.Module):
         # Project back to d_model if v_dim was compressed
         c_deep = self.out_proj(c_deep.to(y.dtype))
 
-        # 4. Memory Injection (memory_gain has been removed as redundant)
+        # Memory Injection (memory_gain has been removed as redundant)
         h_new = h_prev + y + read_gate * (c_local + c_deep)
 
-        # 5. State updates
+        # State updates
         decay = torch.sigmoid(self.decay_bias[position]).view(self.n_heads, self.r_head)  # shape: (H, r_head)
         key_decay = torch.sigmoid(self.key_decay_bias[position]).view(self.n_heads, self.r_head)  # shape: (H, r_head)
         self.last_decay_gate = decay.detach().mean()
@@ -333,7 +331,7 @@ class SWDALRCell(nn.Module):
         # outer: K_phi_f (B, S, H, r_head, 1) @ V_gated_f (B, S, H, 1, d_head) -> (B, S, H, r_head, d_head)
         outer = torch.matmul(K_phi_f.unsqueeze(-1), V_gated_f.unsqueeze(-2))
         
-        # 8. Fused state updates using torch.addcmul
+        # Fused state updates using torch.addcmul
         S_new = torch.addcmul(
             outer,
             decay.view(1, 1, self.n_heads, self.r_head, 1),
@@ -341,7 +339,7 @@ class SWDALRCell(nn.Module):
         )
 
         # Update running key-sum normalizer z
-        # 8. Fused normalizer updates using torch.addcmul
+        # Fused normalizer updates using torch.addcmul
         z_new = torch.addcmul(
             K_phi_f,
             key_decay.view(1, 1, self.n_heads, self.r_head),

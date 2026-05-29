@@ -2,7 +2,7 @@
 
 Import any module component from here::
 
-    from src.modules import TransformerDecoder, BlockAttnRes
+    
 """
 
 from .attention import Attention
