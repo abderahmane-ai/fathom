@@ -84,12 +84,26 @@ class DPSEvaluator:
                 raise ValueError(f"Could not find final norm '{final_norm_name}' or last layer.")
 
         def target_hook(module: nn.Module, inputs: tuple, output: torch.Tensor | tuple) -> None:
-            # output might be a tuple if the layer returns (hidden_states, past_key_values, ...)
-            hidden = output[0] if isinstance(output, tuple) else output
+            # output might be a tuple:
+            # - For block_attnres/full_attnres: (blocks/history_list, hidden_tensor)
+            # - For standard/recurrent_residual: (hidden_tensor, memory_tensor)
+            if isinstance(output, tuple):
+                if isinstance(output[0], list):
+                    hidden = output[1]
+                else:
+                    hidden = output[0]
+            else:
+                hidden = output
             self._current_target = hidden.detach().float()
 
         def source_hook(module: nn.Module, inputs: tuple, output: torch.Tensor | tuple) -> None:
-            hidden = output[0] if isinstance(output, tuple) else output
+            if isinstance(output, tuple):
+                if isinstance(output[0], list):
+                    hidden = output[1]
+                else:
+                    hidden = output[0]
+            else:
+                hidden = output
             self._current_source = hidden.detach().float()
 
         self._hooks.append(target_module.register_forward_hook(target_hook))

@@ -160,6 +160,10 @@ class TransformerLayer(nn.Module):
         if (layer_idx + 1) % self.layers_per_block == 0:
             blocks = [*blocks, partial_block]
 
+        output = (blocks, partial_block)
+        for hook in self._forward_hooks.values():
+            hook(self, (blocks, partial_block, layer_idx), output)
+
         return blocks, partial_block
 
     @jaxtyped(typechecker=beartype)
@@ -191,4 +195,9 @@ class TransformerLayer(nn.Module):
         y_ffn = self.ffn(self.ln_2(h_in))
         h_new = h_mid + y_ffn
         history = [*history, h_new]
+
+        output = (history, h_new)
+        for hook in self._forward_hooks.values():
+            hook(self, (history, x), output)
+
         return history, h_new

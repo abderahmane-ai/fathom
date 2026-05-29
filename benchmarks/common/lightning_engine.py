@@ -129,7 +129,7 @@ class BenchmarkModule(lightning.LightningModule):
             lr=float(opt_cfg.lr),
             weight_decay=float(opt_cfg.weight_decay),
             betas=tuple(opt_cfg.get("betas", [0.9, 0.95])),
-            fused=torch.cuda.is_available(),
+            fused=False,
         )
         total_steps = max(1, int(self.trainer.estimated_stepping_batches))
         warmup_steps = int(sch_cfg.warmup_steps)
@@ -390,7 +390,8 @@ def run_benchmark(cfg: DictConfig, benchmark_name: str, residual_mode: str, run_
             "peak_cuda_memory_mb": peak_cuda_memory_mb(),
         }
         write_json(metrics_dir(benchmark_name, residual_mode, run_id) / "summary.json", summary)
-        write_status(benchmark_name, residual_mode, run_id, status="completed", **summary)
+        status_fields = {k: v for k, v in summary.items() if k not in ("benchmark_name", "residual_mode", "run_id")}
+        write_status(benchmark_name, residual_mode, run_id, status="completed", **status_fields)
         commit_modal_volume()
     except Exception as exc:
         write_status(

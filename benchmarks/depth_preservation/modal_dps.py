@@ -27,6 +27,7 @@ log = logging.getLogger(__name__)
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
+    .env({"PYTHONPATH": "/root/rr"})
     .uv_pip_install(
         "torch>=2.2.0",
         "lightning>=2.2.0",
@@ -36,6 +37,9 @@ image = (
         "omegaconf>=2.3.0",
         "einops>=0.7.0",
         "wandb>=0.17.0",
+        "jaxtyping>=0.2.28",
+        "beartype>=0.17.2",
+        "pyarrow>=15.0.0",
     )
     .add_local_dir(str(repo_root()), remote_path=REMOTE_ROOT, ignore=modal_ignore_patterns())
 )

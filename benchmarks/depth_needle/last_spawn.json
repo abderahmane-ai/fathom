@@ -3,16 +3,16 @@
   "benchmark_name": "depth_needle",
   "jobs": {
     "block_attnres": {
-      "object_id": "fc-01KS8T49HS95MKT4301YDPZRX1"
+      "object_id": "fc-01KSCRXXNM7ERWS46QTK835JC5"
     },
     "recurrent_residual": {
-      "object_id": "fc-01KS8T49BYXENYMCNF28BN5Z54"
+      "object_id": "fc-01KSCRXXF29SM5XHK59T1TAQHN"
     },
     "standard": {
-      "object_id": "fc-01KS8T4969SEA8QWKAMTDP2KCH"
+      "object_id": "fc-01KSCRXX7EZGRKV9MAS59X7HD2"
     }
   },
-  "run_id": "depth_needle-20260522T214041Z",
-  "spawned_at": "2026-05-22T21:40:41.713839+00:00",
+  "run_id": "depth_needle-20260524T103641Z",
+  "spawned_at": "2026-05-24T10:36:42.095440+00:00",
   "volume": "rr-benchmark-artifacts"
 }

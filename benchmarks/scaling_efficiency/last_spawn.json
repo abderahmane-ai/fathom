@@ -1,0 +1,18 @@
+{
+  "artifact_mount": "/artifacts",
+  "benchmark_name": "scaling_efficiency",
+  "jobs": {
+    "block_attnres": {
+      "object_id": "fc-01KSD1X1FA82ZTAFHDARD5NA2C"
+    },
+    "recurrent_residual": {
+      "object_id": "fc-01KSD1X14R55EVAZJZDW47XPV5"
+    },
+    "standard": {
+      "object_id": "fc-01KSD1X0XZ6A1GMJYR1C14R3BC"
+    }
+  },
+  "run_id": "scaling_efficiency-20260524T131329Z",
+  "spawned_at": "2026-05-24T13:13:30.420870+00:00",
+  "volume": "rr-benchmark-artifacts"
+}

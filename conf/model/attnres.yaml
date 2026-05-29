@@ -13,5 +13,5 @@ dropout: 0.1
 
 attnres_block:
   # Number of sublayers per block (attention + FFN = 2 per transformer layer).
-  # 6 sublayers = 3 transformer layers per block → 4 blocks for a 12-layer model.
-  block_size: 6
+  # block_size: 2 = 1 layer per block → ~8 blocks for 8-layer model
+  block_size: 2

@@ -21,7 +21,7 @@ model:
     memory_gain_init: 0.0
     eps: 1.0e-5
   attnres_block:
-    block_size: 6
+    block_size: 2  # 12 layers × 2 sublayers / 2 = 12 blocks → paper recommends ~8
   full_attnres:
     max_layers: 24
 

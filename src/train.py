@@ -106,7 +106,7 @@ class LanguageModel(L.LightningModule):
             param_groups,
             lr=opt_cfg.lr,
             betas=tuple(opt_cfg.betas),
-            fused=torch.cuda.is_available(),
+            fused=False,
         )
 
         total_steps = self.trainer.estimated_stepping_batches

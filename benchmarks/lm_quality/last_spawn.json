@@ -1,0 +1,18 @@
+{
+  "artifact_mount": "/artifacts",
+  "benchmark_name": "lm_quality",
+  "jobs": {
+    "block_attnres": {
+      "object_id": "fc-01KSD3TVQ5RM388QP6SV68C3RN"
+    },
+    "recurrent_residual": {
+      "object_id": "fc-01KSD3TVERFEYJB0ASP3EHTNGF"
+    },
+    "standard": {
+      "object_id": "fc-01KSD3TTZDNKJHJBT5HEPAG4S8"
+    }
+  },
+  "run_id": "lm_quality-20260524T134715Z",
+  "spawned_at": "2026-05-24T13:47:16.227715+00:00",
+  "volume": "rr-benchmark-artifacts"
+}
