@@ -133,7 +133,8 @@ class SWDALRCell(nn.Module):
         )
 
         # 1. Fused Deep Projections (MLA-inspired)
-        self.qkv_deep_proj = nn.Linear(d_model, rank * 2 + self.v_dim, bias=False)
+        self.kv_deep_proj = nn.Linear(d_model, rank + self.v_dim, bias=False)
+        self.q_deep_proj = nn.Linear(d_model, rank, bias=False)
         self.deep_norm = RMSNorm(self.v_dim, eps=eps)
 
         # Back-projection if value dimension is compressed
@@ -151,8 +152,9 @@ class SWDALRCell(nn.Module):
             self.gate_biases[0].fill_(read_gate_bias)
             self.gate_biases[1].fill_(write_gate_bias)
 
-        # Orthogonal Initialization for fused projections
-        nn.init.orthogonal_(self.qkv_deep_proj.weight)
+        # Orthogonal Initialization for deep projections
+        nn.init.orthogonal_(self.kv_deep_proj.weight)
+        nn.init.orthogonal_(self.q_deep_proj.weight)
         nn.init.normal_(self.q_local_proj.weight, mean=0.0, std=gate_init_std)
 
         self.last_read_gate: torch.Tensor = torch.zeros((), dtype=torch.float32)
@@ -202,7 +204,6 @@ class SWDALRCell(nn.Module):
             raise IndexError(f"sublayer position {position} exceeds {self.num_sublayers} entries.")
         return position
 
-    @torch.compile
     def forward(
         self,
         h_prev: torch.Tensor,
@@ -274,9 +275,10 @@ class SWDALRCell(nn.Module):
         fifo_buf_permuted = fifo_buf.permute(1, 2, 0, 3)  # shape: (B, S, W, d)
         c_local = torch.matmul(weights_permuted, fifo_buf_permuted).squeeze(-2)
 
-        # 3. Deep multi-head low-rank history retrieval (fused projection)
-        qkv = self.qkv_deep_proj(y)
-        K, Q, V = qkv.split([self.rank, self.rank, self.v_dim], dim=-1)
+        # 3. Deep multi-head low-rank history retrieval (fused K, V projection; separate Q projection)
+        kv = self.kv_deep_proj(y)
+        K, V = kv.split([self.rank, self.v_dim], dim=-1)
+        Q = self.q_deep_proj(h_norm)
 
         # Reshape to multi-head format
         K_reshaped = K.view(B, S, self.n_heads, self.r_head)
