@@ -2,7 +2,7 @@ seed: 42
 modes:
   - standard
   - recurrent_residual
-  - swda_lr
+  - vega
   - block_attnres
   - full_attnres
 
@@ -21,7 +21,7 @@ model:
     gate_init_std: 0.01
     memory_gain_init: 0.0
     eps: 1.0e-5
-  swda_lr:
+  vega:
     window_size: 8
     rank: 16
     n_heads: 4

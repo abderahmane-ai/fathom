@@ -147,9 +147,9 @@ Here $S$ is the number of residual transitions. For a decoder layer with attenti
 
 ---
 
-## 6.5 SWDA-LR: Sliding-Window Depth Attention with Low-Rank History
+## 6.5 VEGA: Sliding-Window Depth Attention with Low-Rank History
 
-SWDA-LR combines two complementary memory mechanisms:
+VEGA combines two complementary memory mechanisms:
 
 **Local Path (FIFO Sliding Window):** Maintains the last $W$ sublayer outputs in a circular buffer. Queries the buffer using softmax attention with a learned relative depth bias, providing exact, uncompressed access to the $W$ most-recent depth steps at $O(Wd)$ cost.
 
@@ -175,7 +175,7 @@ where $\boldsymbol{\phi}(x) = \text{ELU}(x) + 1$ is the positivity feature map e
 
 ## 7. Comparison of Approaches
 
-| Feature | Standard Residuals | Attention Residuals | Recurrent Residuals | SWDA-LR |
+| Feature | Standard Residuals | Attention Residuals | Recurrent Residuals | VEGA |
 | :--- | :--- | :--- | :--- | :--- |
 | **Logic** | Simple Addition | Depth‑wise Softmax | Gated Recurrency (Decoupled) | FIFO Window + Low-Rank Linear Attn |
 | **Information Flow** | Passive Accumulation | Selective Retrieval | Selective Persistence | Local Exact + Deep Covariance |
@@ -259,4 +259,4 @@ Neither metric is sufficient on its own. We evaluate architectures using the tri
 
 ## 9. Conclusion
 
-Each residual mechanism studied here makes a distinct trade-off between expressivity, memory cost, and stability. Standard residuals are a free baseline. Attention Residuals offer selective random-access depth retrieval at $O(Ld)$ cost. Recurrent Residuals provide $O(d)$ persistent working memory with provably bounded norms. SWDA-LR combines both local exactness and long-range covariance retrieval at $O(Wd + rd)$ cost, bridging the gap between the two extremes. The shared evaluation framework—DRI, GPI, and perplexity—provides a principled lens for comparing these designs on both information-preservation and downstream language-model quality.
+Each residual mechanism studied here makes a distinct trade-off between expressivity, memory cost, and stability. Standard residuals are a free baseline. Attention Residuals offer selective random-access depth retrieval at $O(Ld)$ cost. Recurrent Residuals provide $O(d)$ persistent working memory with provably bounded norms. VEGA combines both local exactness and long-range covariance retrieval at $O(Wd + rd)$ cost, bridging the gap between the two extremes. The shared evaluation framework—DRI, GPI, and perplexity—provides a principled lens for comparing these designs on both information-preservation and downstream language-model quality.

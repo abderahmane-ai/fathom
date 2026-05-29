@@ -9,7 +9,7 @@ signals as depth increases. This project compares three residual mechanisms:
 
 1.  **Recurrent Residuals (RR)**: Treats the depth dimension as a recurrent process. A persistent "working memory" state $m$ flows across layers, updated by gated read/write mechanisms.
 2.  **Attention Residuals (AttnRes)**: Based on the Moonshot AI paper (arXiv:2603.15031). Uses softmax attention over previous "blocks" of layers to selectively aggregate information.
-3.  **SWDA-LR**: Sliding-Window Depth Attention with Low-Rank History. Combines an exact local FIFO sliding window with a multi-head low-rank running covariance for deep history retrieval. $O(L)$ complexity with logarithmic timescale decay initialization.
+3.  **VEGA**: Sliding-Window Depth Attention with Low-Rank History. Combines an exact local FIFO sliding window with a multi-head low-rank running covariance for deep history retrieval. $O(L)$ complexity with logarithmic timescale decay initialization.
 
 RR is implemented as a standard Pre-LN residual addition plus a diagonal gated
 memory path. Block AttnRes is implemented as the practical Attention Residuals

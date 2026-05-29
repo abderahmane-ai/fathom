@@ -1,9 +1,9 @@
-# conf/model/swda_lr.yaml — Sliding-Window Depth Attention with Low-Rank History residual transformer
+# conf/model/vega.yaml — Sliding-Window Depth Attention with Low-Rank History residual transformer
 # @package model
 
-residual_mode: swda_lr
+residual_mode: vega
 
-swda_lr:
+vega:
   window_size: 8
   rank: 16
   n_heads: 4
