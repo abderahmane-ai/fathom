@@ -26,8 +26,8 @@ class RMSNorm(nn.Module):
 
     def __init__(self, d_model: int, eps: float = 1e-5) -> None:
         super().__init__()
-        self.d_model = d_model
         self.eps = eps
+        self.scale = nn.Parameter(torch.ones(d_model))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize ``x`` by its RMS over the final dimension.
@@ -38,8 +38,9 @@ class RMSNorm(nn.Module):
         Returns:
             RMS-normalized tensor with the same shape as ``x``.
         """
-        scale = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-        return x * scale
+        variance = x.pow(2).mean(dim=-1, keepdim=True)
+        x = x * torch.rsqrt(variance + self.eps)
+        return self.scale * x
 
 
 class SWDALRCell(nn.Module):
@@ -53,6 +54,7 @@ class SWDALRCell(nn.Module):
         v_dim: Optional compression dimension for Values. If None, defaults to d_model.
         decay_bias_init: Initial value for decay bias logits.
         read_gate_bias: Initial read-gate bias.
+        write_gate_bias: Initial write-gate bias.
         eps: Epsilon for RMSNorm and LayerNorm.
         gate_init_std: Standard deviation for diagonal gate weights.
     """
@@ -66,6 +68,7 @@ class SWDALRCell(nn.Module):
         v_dim: int | None = None,
         decay_bias_init: float = 3.0,
         read_gate_bias: float = -3.0,
+        write_gate_bias: float = -2.0,
         eps: float = 1e-5,
         gate_init_std: float = 0.01,
     ) -> None:
@@ -81,7 +84,11 @@ class SWDALRCell(nn.Module):
         # Read gate parameters
         self.read_weight = nn.Parameter(torch.empty(d_model))
         self.read_bias = nn.Parameter(torch.full((d_model,), read_gate_bias))
-        self.memory_gain = nn.Parameter(torch.zeros(d_model))  # Zero-start
+        self.memory_gain = nn.Parameter(torch.ones(d_model))  # Zero-start via read gate
+
+        # Write gate parameters
+        self.write_weight = nn.Parameter(torch.empty(d_model))
+        self.write_bias = nn.Parameter(torch.full((d_model,), write_gate_bias))
 
         # State decay parameters (SSM-style)
         self.decay_bias = nn.Parameter(torch.full((self.num_sublayers, rank), decay_bias_init))
@@ -90,6 +97,9 @@ class SWDALRCell(nn.Module):
         # Local Projections
         self.q_local_proj = nn.Linear(d_model, d_model, bias=False)
         self.local_norm = RMSNorm(d_model, eps=eps)
+
+        # Relative Depth Bias for FIFO attention
+        self.fifo_depth_bias = nn.Parameter(torch.zeros(window_size))
 
         # Deep Projections (Corrected Dimensions)
         self.k_deep_proj = nn.Linear(d_model, rank, bias=False)  # Keys -> rank
@@ -107,6 +117,7 @@ class SWDALRCell(nn.Module):
 
         # Initializations
         nn.init.normal_(self.read_weight, mean=0.0, std=gate_init_std)
+        nn.init.normal_(self.write_weight, mean=0.0, std=gate_init_std)
         nn.init.normal_(self.q_local_proj.weight, mean=0.0, std=gate_init_std)
         nn.init.normal_(self.k_deep_proj.weight, mean=0.0, std=gate_init_std)
         nn.init.normal_(self.q_deep_proj.weight, mean=0.0, std=gate_init_std)
@@ -120,8 +131,8 @@ class SWDALRCell(nn.Module):
         batch_size: int,
         seq_len: int,
         device: torch.device | None = None,
-    ) -> tuple[list[torch.Tensor], torch.Tensor, torch.Tensor]:
-        """Return the initial states: empty FIFO, zero S, zero z.
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return the initial states: empty FIFO tensor, zero step index, zero S, zero z.
 
         Args:
             batch_size: Batch size ``B``.
@@ -129,10 +140,13 @@ class SWDALRCell(nn.Module):
             device: Optional target device.
 
         Returns:
-            Tuple of (empty FIFO list, S_init, z_init).
+            Tuple of (FIFO tensor buffer, step index, S_init, z_init).
         """
         target_device = self.read_weight.device if device is None else device
-        fifo: list[torch.Tensor] = []
+        fifo_buf = torch.zeros(
+            self.window_size, batch_size, seq_len, self.d_model, device=target_device, dtype=torch.float32
+        )
+        fifo_idx = torch.tensor(0, device=target_device, dtype=torch.long)
         # S shape: (B, S, rank, v_dim). Kept in FP32 for stable accumulation.
         S_init = torch.zeros(
             batch_size, seq_len, self.rank, self.v_dim, device=target_device, dtype=torch.float32
@@ -141,7 +155,7 @@ class SWDALRCell(nn.Module):
         z_init = torch.zeros(
             batch_size, seq_len, self.rank, device=target_device, dtype=torch.float32
         )
-        return fifo, S_init, z_init
+        return fifo_buf, fifo_idx, S_init, z_init
 
     def _sublayer_position(self, layer_idx: int, sublayer: int) -> int:
         """Map a layer/sublayer pair to a depth-bias row."""
@@ -156,17 +170,17 @@ class SWDALRCell(nn.Module):
         self,
         h_prev: torch.Tensor,
         y: torch.Tensor,
-        m: tuple[list[torch.Tensor], torch.Tensor, torch.Tensor],
+        m: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
         layer_idx: int,
         sublayer: int = 0,
         h_norm: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, tuple[list[torch.Tensor], torch.Tensor, torch.Tensor]]:
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
         """Compute one SWDA-LR transition.
 
         Args:
             h_prev: Hidden state entering the sublayer, shape ``(B, S, d_model)``.
             y: Sublayer output, shape ``(B, S, d_model)``.
-            m: Memory state tuple ``(fifo, S_prev, z_prev)``.
+            m: Memory state tuple ``(fifo_buf, fifo_idx, S_prev, z_prev)``.
             layer_idx: Zero-based transformer layer index.
             sublayer: ``0`` for attention and ``1`` for FFN.
             h_norm: Optional pre-computed normalized representation of ``h_prev``.
@@ -174,7 +188,8 @@ class SWDALRCell(nn.Module):
         Returns:
             Tuple ``(h_new, m_new)``.
         """
-        fifo, S_prev, z_prev = m
+        fifo_buf, fifo_idx, S_prev, z_prev = m
+        position = self._sublayer_position(layer_idx, sublayer)
 
         if h_norm is None:
             h_norm = F.layer_norm(h_prev, (self.d_model,), eps=self.eps)
@@ -183,22 +198,32 @@ class SWDALRCell(nn.Module):
         read_gate = torch.sigmoid(self.read_weight * h_norm + self.read_bias)
         self.last_read_gate = read_gate.detach().mean()
 
+        # Write Gate (Controls memory write selectivity)
+        write_gate = torch.sigmoid(self.write_weight * y + self.write_bias)
+
         # 2. Local FIFO sliding window attention
-        if len(fifo) > 0:
-            # shape: (W, B, S, d)
-            fifo_tensor = torch.stack(fifo, dim=0)
-            keys_local = self.local_norm(fifo_tensor)
-            q_local = self.q_local_proj(y)  # shape: (B, S, d)
+        write_idx = fifo_idx % self.window_size
+        fifo_buf = fifo_buf.index_copy(0, write_idx.unsqueeze(0), y.unsqueeze(0).to(fifo_buf.dtype))
+        next_idx = fifo_idx + 1
 
-            # Attention logits over the window dimension
-            # logits shape: (W, B, S)
-            logits = torch.einsum("b s d, w b s d -> w b s", q_local, keys_local) / math.sqrt(self.d_model)
-            weights = torch.softmax(logits, dim=0)
+        keys_local = self.local_norm(fifo_buf)
+        q_local = self.q_local_proj(y)  # shape: (B, S, d)
 
-            # c_local shape: (B, S, d)
-            c_local = torch.einsum("w b s, w b s d -> b s d", weights, fifo_tensor)
-        else:
-            c_local = torch.zeros_like(y)
+        # Attention logits over the window dimension
+        # logits shape: (W, B, S)
+        logits = torch.einsum("b s d, w b s d -> w b s", q_local, keys_local) / math.sqrt(self.d_model)
+        logits = logits + self.fifo_depth_bias.view(-1, 1, 1)
+
+        # Causal mask for unfilled buffer slots in early layers
+        indices = torch.arange(self.window_size, device=y.device).view(-1, 1, 1)
+        is_unfilled = (fifo_idx < self.window_size - 1).view(1, 1, 1)
+        mask = torch.where((indices <= write_idx.view(1, 1, 1)) | ~is_unfilled, 0.0, float("-inf"))
+        logits = logits + mask
+
+        weights = torch.softmax(logits, dim=0)
+
+        # c_local shape: (B, S, d)
+        c_local = torch.einsum("w b s, w b s d -> b s d", weights, fifo_buf)
 
         # 3. Deep low-rank history retrieval with linear attention normalization
         K = self.k_deep_proj(y)  # shape: (B, S, r)
@@ -212,7 +237,10 @@ class SWDALRCell(nn.Module):
         # Cast to float32 for stable recurrent calculations
         Q_phi_f = Q_phi.float()
         K_phi_f = K_phi.float()
-        V_f = V.float()
+        
+        # Apply Write Gate to Value projection before deep storage
+        V_gated = V * write_gate
+        V_gated_f = V_gated.float()
 
         # Numerator: Q_phi (B, S, 1, r) @ S_prev (B, S, r, v) -> (B, S, 1, v) -> squeeze to (B, S, v)
         num = torch.matmul(Q_phi_f.unsqueeze(-2), S_prev).squeeze(-2)
@@ -231,25 +259,16 @@ class SWDALRCell(nn.Module):
         h_new = h_prev + y + read_gate * (self.memory_gain * (c_local + c_deep))
 
         # 5. State updates
-        position = self._sublayer_position(layer_idx, sublayer)
-
-        # Decays (SSM-style)
         decay = torch.sigmoid(self.decay_bias[position])  # shape: (r,)
         key_decay = torch.sigmoid(self.key_decay_bias[position])  # shape: (r,)
         self.last_decay_gate = decay.detach().mean()
 
-        # Update FIFO (Allow gradients to flow to local history)
-        fifo_new = list(fifo)
-        fifo_new.append(y)
-        if len(fifo_new) > self.window_size:
-            fifo_new.pop(0)
-
         # Update running covariance state S
-        # outer: K_phi_f (B, S, r, 1) @ V_f (B, S, 1, v) -> (B, S, r, v)
-        outer = torch.matmul(K_phi_f.unsqueeze(-1), V_f.unsqueeze(-2))
+        # outer: K_phi_f (B, S, r, 1) @ V_gated_f (B, S, 1, v) -> (B, S, r, v)
+        outer = torch.matmul(K_phi_f.unsqueeze(-1), V_gated_f.unsqueeze(-2))
         S_new = decay.view(1, 1, -1, 1) * S_prev + outer
 
         # Update running key-sum normalizer z
         z_new = key_decay.view(1, 1, -1) * z_prev + K_phi_f
 
-        return h_new, (fifo_new, S_new, z_new)
+        return h_new, (fifo_buf, next_idx, S_new, z_new)

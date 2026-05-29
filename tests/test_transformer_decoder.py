@@ -118,8 +118,9 @@ def test_swda_lr_memory_flow(config):
         # args[2] is m = (fifo, S, z)
         m = args[2]
         assert m is not None, f"Layer {idx} did not receive memory state m"
-        fifo, S_state, z_state = m
-        assert isinstance(fifo, list)
+        fifo_buf, fifo_idx, S_state, z_state = m
+        assert isinstance(fifo_buf, torch.Tensor)
+        assert fifo_buf.shape == (config.swda_lr.window_size, B, S, config.d_model)
         assert S_state.shape == (B, S, config.swda_lr.rank, config.d_model)
         assert z_state.shape == (B, S, config.swda_lr.rank)
 
