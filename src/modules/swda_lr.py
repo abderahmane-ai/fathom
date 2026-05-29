@@ -56,7 +56,7 @@ class SWDALRCell(nn.Module):
         decay_bias_init: Initial value for decay bias logits.
         read_gate_bias: Initial read-gate bias.
         write_gate_bias: Initial write-gate bias.
-        eps: Epsilon for RMSNorm and LayerNorm.
+        eps: Epsilon for RMSNorm.
         gate_init_std: Standard deviation for diagonal gate weights.
     """
 
@@ -92,21 +92,15 @@ class SWDALRCell(nn.Module):
         self.r_head = rank // n_heads
         self.d_head = self.v_dim // n_heads
 
-        # Read gate parameters
-        self.read_weight = nn.Parameter(torch.empty(d_model))
-        self.read_bias = nn.Parameter(torch.full((d_model,), read_gate_bias))
-        self.memory_gain = nn.Parameter(torch.ones(d_model))  # Zero-start via read gate
-
-        # Write gate parameters
-        self.write_weight = nn.Parameter(torch.empty(d_model))
-        self.write_bias = nn.Parameter(torch.full((d_model,), write_gate_bias))
+        # 9. Fused Read and Write Gate parameters (Row 0: Read, Row 1: Write)
+        self.gate_weights = nn.Parameter(torch.empty(2, d_model))
+        self.gate_biases = nn.Parameter(torch.empty(2, d_model))
 
         # State decay parameters (SSM-style)
         self.decay_bias = nn.Parameter(torch.empty(self.num_sublayers, rank))
         self.key_decay_bias = nn.Parameter(torch.empty(self.num_sublayers, rank))
 
         # Logarithmic distribution timescale initialization for decay gates
-        # timescales range from 1.0 (immediate decay) to 2 * num_layers (long-term memory)
         with torch.no_grad():
             for pos in range(self.num_sublayers):
                 min_ts = 1.0
@@ -125,13 +119,21 @@ class SWDALRCell(nn.Module):
         self.q_local_proj = nn.Linear(d_model, d_model, bias=False)
         self.local_norm = RMSNorm(d_model, eps=eps)
 
+        # 7. RMSNorm for input path
+        self.h_norm = RMSNorm(d_model, eps=eps)
+
         # Relative Depth Bias for FIFO attention
         self.fifo_depth_bias = nn.Parameter(torch.zeros(window_size))
 
-        # Deep Projections (MLA-inspired)
-        self.k_deep_proj = nn.Linear(d_model, rank, bias=False)  # Keys -> rank
-        self.q_deep_proj = nn.Linear(d_model, rank, bias=False)  # Queries -> rank
-        self.v_deep_proj = nn.Linear(d_model, self.v_dim, bias=False)  # Values -> v_dim
+        # 6. Register the arange mask as a non-persistent buffer
+        self.register_buffer(
+            "window_indices",
+            torch.arange(window_size).view(-1, 1, 1),
+            persistent=False,
+        )
+
+        # 1. Fused Deep Projections (MLA-inspired)
+        self.qkv_deep_proj = nn.Linear(d_model, rank * 2 + self.v_dim, bias=False)
         self.deep_norm = RMSNorm(self.v_dim, eps=eps)
 
         # Back-projection if value dimension is compressed
@@ -143,14 +145,14 @@ class SWDALRCell(nn.Module):
             self.out_proj = nn.Identity()
 
         # Initializations
-        nn.init.normal_(self.read_weight, mean=0.0, std=gate_init_std)
-        nn.init.normal_(self.write_weight, mean=0.0, std=gate_init_std)
-        
-        # Orthogonal Initialization for key, query and value projection matrices
-        nn.init.orthogonal_(self.k_deep_proj.weight)
-        nn.init.orthogonal_(self.q_deep_proj.weight)
-        nn.init.orthogonal_(self.v_deep_proj.weight)
-        
+        with torch.no_grad():
+            self.gate_weights[0].normal_(mean=0.0, std=gate_init_std)
+            self.gate_weights[1].normal_(mean=0.0, std=gate_init_std)
+            self.gate_biases[0].fill_(read_gate_bias)
+            self.gate_biases[1].fill_(write_gate_bias)
+
+        # Orthogonal Initialization for fused projections
+        nn.init.orthogonal_(self.qkv_deep_proj.weight)
         nn.init.normal_(self.q_local_proj.weight, mean=0.0, std=gate_init_std)
 
         self.last_read_gate: torch.Tensor = torch.zeros((), dtype=torch.float32)
@@ -161,8 +163,8 @@ class SWDALRCell(nn.Module):
         batch_size: int,
         seq_len: int,
         device: torch.device | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Return the initial states: empty FIFO tensor, zero step index, zero S, zero z.
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return the initial states: empty FIFO tensors, zero step index, zero S, zero z.
 
         Args:
             batch_size: Batch size ``B``.
@@ -170,10 +172,13 @@ class SWDALRCell(nn.Module):
             device: Optional target device.
 
         Returns:
-            Tuple of (FIFO tensor buffer, step index, S_init, z_init).
+            Tuple of (FIFO tensor buffer, FIFO norm buffer, step index, S_init, z_init).
         """
-        target_device = self.read_weight.device if device is None else device
+        target_device = self.gate_weights.device if device is None else device
         fifo_buf = torch.zeros(
+            self.window_size, batch_size, seq_len, self.d_model, device=target_device, dtype=torch.float32
+        )
+        fifo_norm_buf = torch.zeros(
             self.window_size, batch_size, seq_len, self.d_model, device=target_device, dtype=torch.float32
         )
         fifo_idx = torch.tensor(0, device=target_device, dtype=torch.long)
@@ -186,7 +191,7 @@ class SWDALRCell(nn.Module):
         z_init = torch.zeros(
             batch_size, seq_len, self.n_heads, self.r_head, device=target_device, dtype=torch.float32
         )
-        return fifo_buf, fifo_idx, S_init, z_init
+        return fifo_buf, fifo_norm_buf, fifo_idx, S_init, z_init
 
     def _sublayer_position(self, layer_idx: int, sublayer: int) -> int:
         """Map a layer/sublayer pair to a depth-bias row."""
@@ -197,21 +202,22 @@ class SWDALRCell(nn.Module):
             raise IndexError(f"sublayer position {position} exceeds {self.num_sublayers} entries.")
         return position
 
+    @torch.compile
     def forward(
         self,
         h_prev: torch.Tensor,
         y: torch.Tensor,
-        m: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+        m: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
         layer_idx: int,
         sublayer: int = 0,
         h_norm: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
         """Compute one SWDA-LR transition.
 
         Args:
             h_prev: Hidden state entering the sublayer, shape ``(B, S, d_model)``.
             y: Sublayer output, shape ``(B, S, d_model)``.
-            m: Memory state tuple ``(fifo_buf, fifo_idx, S_prev, z_prev)``.
+            m: Memory state tuple ``(fifo_buf, fifo_norm_buf, fifo_idx, S_prev, z_prev)``.
             layer_idx: Zero-based transformer layer index.
             sublayer: ``0`` for attention and ``1`` for FFN.
             h_norm: Optional pre-computed normalized representation of ``h_prev``.
@@ -219,49 +225,57 @@ class SWDALRCell(nn.Module):
         Returns:
             Tuple ``(h_new, m_new)``.
         """
-        fifo_buf, fifo_idx, S_prev, z_prev = m
+        fifo_buf, fifo_norm_buf, fifo_idx, S_prev, z_prev = m
         position = self._sublayer_position(layer_idx, sublayer)
 
         if h_norm is None:
-            h_norm = F.layer_norm(h_prev, (self.d_model,), eps=self.eps)
+            # 7. Use custom RMSNorm
+            h_norm = self.h_norm(h_prev)
 
         B, S, d = h_prev.shape
 
-        # 1. Read Gate
-        read_gate = torch.sigmoid(self.read_weight * h_norm + self.read_bias)
+        # 9. Fused Read/Write Gates: Stack inputs and evaluate in one call
+        gate_inputs = torch.stack([h_norm, y], dim=0)
+        gates = torch.sigmoid(
+            gate_inputs * self.gate_weights.view(2, 1, 1, -1) + self.gate_biases.view(2, 1, 1, -1)
+        )
+        read_gate, write_gate = gates[0], gates[1]
         self.last_read_gate = read_gate.detach().mean()
-
-        # Write Gate (Controls memory write selectivity)
-        write_gate = torch.sigmoid(self.write_weight * y + self.write_bias)
 
         # 2. Local FIFO sliding window attention
         write_idx = fifo_idx % self.window_size
-        fifo_buf = fifo_buf.index_copy(0, write_idx.unsqueeze(0), y.unsqueeze(0).to(fifo_buf.dtype))
+        
+        # 4. In-place FIFO write
+        fifo_buf[write_idx] = y.to(fifo_buf.dtype)
+        # 3. Cache FIFO norm_buf
+        fifo_norm_buf[write_idx] = self.local_norm(y).to(fifo_norm_buf.dtype)
+        
         next_idx = fifo_idx + 1
+        keys_local = fifo_norm_buf
 
-        keys_local = self.local_norm(fifo_buf)
         q_local = self.q_local_proj(y)  # shape: (B, S, d)
 
-        # Attention logits over the window dimension
-        # logits shape: (W, B, S)
-        logits = torch.einsum("b s d, w b s d -> w b s", q_local, keys_local) / math.sqrt(self.d_model)
+        # 10. Matmul-based attention instead of einsum
+        keys_local_permuted = keys_local.permute(1, 2, 0, 3)  # shape: (B, S, W, d)
+        logits = torch.matmul(keys_local_permuted, q_local.unsqueeze(-1)).squeeze(-1).permute(2, 0, 1)
+        logits = logits / math.sqrt(self.d_model)
         logits = logits + self.fifo_depth_bias.view(-1, 1, 1)
 
-        # Causal mask for unfilled buffer slots in early layers
-        indices = torch.arange(self.window_size, device=y.device).view(-1, 1, 1)
+        # Causal mask for unfilled buffer slots in early layers using registered window_indices buffer
         is_unfilled = (fifo_idx < self.window_size - 1).view(1, 1, 1)
-        mask = torch.where((indices <= write_idx.view(1, 1, 1)) | ~is_unfilled, 0.0, float("-inf"))
+        mask = torch.where((self.window_indices <= write_idx.view(1, 1, 1)) | ~is_unfilled, 0.0, float("-inf"))
         logits = logits + mask
 
         weights = torch.softmax(logits, dim=0)
 
-        # c_local shape: (B, S, d)
-        c_local = torch.einsum("w b s, w b s d -> b s d", weights, fifo_buf)
+        # 10. Matmul-based context aggregation instead of einsum
+        weights_permuted = weights.permute(1, 2, 0).unsqueeze(-2)  # shape: (B, S, 1, W)
+        fifo_buf_permuted = fifo_buf.permute(1, 2, 0, 3)  # shape: (B, S, W, d)
+        c_local = torch.matmul(weights_permuted, fifo_buf_permuted).squeeze(-2)
 
-        # 3. Deep multi-head low-rank history retrieval with linear attention normalization
-        K = self.k_deep_proj(y)  # shape: (B, S, rank)
-        Q = self.q_deep_proj(h_norm)  # shape: (B, S, rank)
-        V = self.v_deep_proj(y)  # shape: (B, S, v_dim)
+        # 3. Deep multi-head low-rank history retrieval (fused projection)
+        qkv = self.qkv_deep_proj(y)
+        K, Q, V = qkv.split([self.rank, self.rank, self.v_dim], dim=-1)
 
         # Reshape to multi-head format
         K_reshaped = K.view(B, S, self.n_heads, self.r_head)
@@ -299,8 +313,8 @@ class SWDALRCell(nn.Module):
         # Project back to d_model if v_dim was compressed
         c_deep = self.out_proj(c_deep.to(y.dtype))
 
-        # 4. Memory Injection
-        h_new = h_prev + y + read_gate * (self.memory_gain * (c_local + c_deep))
+        # 4. Memory Injection (memory_gain has been removed as redundant)
+        h_new = h_prev + y + read_gate * (c_local + c_deep)
 
         # 5. State updates
         decay = torch.sigmoid(self.decay_bias[position]).view(self.n_heads, self.r_head)  # shape: (H, r_head)
@@ -310,9 +324,20 @@ class SWDALRCell(nn.Module):
         # Update running covariance state S
         # outer: K_phi_f (B, S, H, r_head, 1) @ V_gated_f (B, S, H, 1, d_head) -> (B, S, H, r_head, d_head)
         outer = torch.matmul(K_phi_f.unsqueeze(-1), V_gated_f.unsqueeze(-2))
-        S_new = decay.view(1, 1, self.n_heads, self.r_head, 1) * S_prev + outer
+        
+        # 8. Fused state updates using torch.addcmul
+        S_new = torch.addcmul(
+            outer,
+            decay.view(1, 1, self.n_heads, self.r_head, 1),
+            S_prev
+        )
 
         # Update running key-sum normalizer z
-        z_new = key_decay.view(1, 1, self.n_heads, self.r_head) * z_prev + K_phi_f
+        # 8. Fused normalizer updates using torch.addcmul
+        z_new = torch.addcmul(
+            K_phi_f,
+            key_decay.view(1, 1, self.n_heads, self.r_head),
+            z_prev
+        )
 
-        return h_new, (fifo_buf, next_idx, S_new, z_new)
+        return h_new, (fifo_buf, fifo_norm_buf, next_idx, S_new, z_new)
