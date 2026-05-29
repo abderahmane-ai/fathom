@@ -1,9 +1,9 @@
 """Recurrent Residual cell for Transformer sublayers.
 
-The cell implements the methodology equations exactly: diagonal read/update
-gates, an RMS-normalized memory read path, and an EMA memory update across
-depth. At initialization the memory injection path is zero, so the hidden-state
-update matches a standard Pre-LN residual addition.
+The cell implements the methodology equations: diagonal read, forget, and
+update gates, an RMS-normalized memory read path, and a gated memory update
+across depth. At initialization the memory injection path is zero, so the
+hidden-state update matches a standard Pre-LN residual addition.
 """
 
 from __future__ import annotations
@@ -56,6 +56,7 @@ class RecurrentResidualCell(nn.Module):
         d_model: Hidden dimension ``d``.
         num_layers: Total transformer layers; allocates two depth biases per layer.
         read_gate_bias: Initial read-gate bias.
+        forget_gate_bias: Initial forget-gate bias.
         update_gate_bias: Initial update-gate bias.
         eps: Epsilon for parameter-free LayerNorm/RMSNorm.
         gate_init_std: Standard deviation for diagonal gate weights.
@@ -67,6 +68,7 @@ class RecurrentResidualCell(nn.Module):
         d_model: int,
         num_layers: int,
         read_gate_bias: float = -3.0,
+        forget_gate_bias: float = 3.0,
         update_gate_bias: float = -2.0,
         eps: float = 1e-5,
         gate_init_std: float = 0.01,
@@ -80,6 +82,8 @@ class RecurrentResidualCell(nn.Module):
 
         self.read_weight = nn.Parameter(torch.empty(d_model))
         self.read_bias = nn.Parameter(torch.full((d_model,), read_gate_bias))
+        self.forget_weight = nn.Parameter(torch.empty(d_model))
+        self.forget_bias = nn.Parameter(torch.full((d_model,), forget_gate_bias))
         self.update_weight = nn.Parameter(torch.empty(d_model))
         self.update_bias = nn.Parameter(torch.full((d_model,), update_gate_bias))
         self.memory_gain = nn.Parameter(torch.full((d_model,), memory_gain_init))
@@ -88,9 +92,11 @@ class RecurrentResidualCell(nn.Module):
         self.memory_norm = RMSNorm(d_model, eps=eps)
 
         nn.init.normal_(self.read_weight, mean=0.0, std=gate_init_std)
+        nn.init.normal_(self.forget_weight, mean=0.0, std=gate_init_std)
         nn.init.normal_(self.update_weight, mean=0.0, std=gate_init_std)
 
         self.last_read_gate: torch.Tensor = torch.zeros((), dtype=torch.float32)
+        self.last_forget_gate: torch.Tensor = torch.zeros((), dtype=torch.float32)
         self.last_update_gate: torch.Tensor = torch.zeros((), dtype=torch.float32)
 
     @property
@@ -98,9 +104,9 @@ class RecurrentResidualCell(nn.Module):
         """Return the methodology parameter count.
 
         Returns:
-            ``(num_sublayers + 6) * d_model``.
+            ``(num_sublayers + 8) * d_model``.
         """
-        return (self.num_sublayers + 6) * self.d_model
+        return (self.num_sublayers + 8) * self.d_model
 
     @jaxtyped(typechecker=beartype)
     def get_initial_state(
@@ -178,11 +184,13 @@ class RecurrentResidualCell(nn.Module):
         h_new = h_prev + y + read_gate * memory_read
 
         position = self._sublayer_position(layer_idx, sublayer)
+        forget_gate = torch.sigmoid(self.forget_weight * y + self.forget_bias)
         update_gate = torch.sigmoid(
             self.update_weight * y + self.update_bias + self.depth_bias[position]
         )
-        m_new = update_gate * y + (1.0 - update_gate) * m
+        m_new = forget_gate * m + update_gate * y
 
         self.last_read_gate = read_gate.detach().mean()
+        self.last_forget_gate = forget_gate.detach().mean()
         self.last_update_gate = update_gate.detach().mean()
         return h_new, m_new

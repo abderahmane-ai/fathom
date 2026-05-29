@@ -70,3 +70,5 @@ logs/
 # ── Hydra / Outputs ───────────────────────────────────────────────────────────
 outputs/
 multirun/
+
+scratch/

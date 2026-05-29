@@ -68,6 +68,7 @@ class TransformerDecoder(nn.Module):
                 config.d_model,
                 config.num_layers,
                 read_gate_bias=rr_cfg.read_gate_bias,
+                forget_gate_bias=getattr(rr_cfg, "forget_gate_bias", 3.0),
                 update_gate_bias=rr_cfg.update_gate_bias,
                 eps=rr_cfg.eps,
                 gate_init_std=rr_cfg.gate_init_std,

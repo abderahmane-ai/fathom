@@ -53,8 +53,9 @@ $$
 \mathbf{y}_l &= \mathcal{F}_l\!\bigl(\mathrm{LayerNorm}(\mathbf{h}_{l-1})\bigr) \\[4pt]
 \mathbf{r}_l &= \sigma\!\bigl(\mathbf{w}_r \odot \mathrm{LayerNorm}(\mathbf{h}_{l-1}) + \mathbf{b}_r\bigr) \qquad \text{(read gate)} \\[4pt]
 \mathbf{h}_l &= \mathbf{h}_{l-1} + \mathbf{y}_l + \mathbf{r}_l \odot \bigl(\mathbf{g}_m \odot \mathrm{RMSNorm}(\mathbf{m}_{l-1})\bigr) \\[4pt]
+\mathbf{f}_l &= \sigma\!\bigl(\mathbf{w}_f \odot \mathbf{y}_l + \mathbf{b}_f\bigr) \qquad \text{(forget gate)} \\[4pt]
 \mathbf{u}_l &= \sigma\!\bigl(\mathbf{w}_u \odot \mathbf{y}_l + \mathbf{b}_u + \mathbf{p}_l\bigr) \qquad \text{(update gate)} \\[4pt]
-\mathbf{m}_l &= \mathbf{u}_l \odot \mathbf{y}_l + (\mathbf{1} - \mathbf{u}_l) \odot \mathbf{m}_{l-1}
+\mathbf{m}_l &= \mathbf{f}_l \odot \mathbf{m}_{l-1} + \mathbf{u}_l \odot \mathbf{y}_l
 \end{aligned}
 \right.
 }
@@ -67,10 +68,11 @@ $$
 - $\mathbf{y}_l$ : output of the sublayer (attention or feed‑forward) after layer normalisation.
 - $\mathbf{r}_l$ : **read gate**—decides how much memory to inject, per dimension. Computed from the normalised hidden state to prevent depth‑dependent saturation.
 - $\mathbf{g}_m$ : **memory gain**—learnable per‑dimension gain applied to the RMS‑normalised memory before injection.
-- $\mathbf{u}_l$ : **update gate**—controls the blend between the new output $\mathbf{y}_l$ and the old memory $\mathbf{m}_{l-1}$ in the EMA.
+- $\mathbf{f}_l$ : **forget gate**—controls the retention of the old memory state $\mathbf{m}_{l-1}$ per dimension.
+- $\mathbf{u}_l$ : **update gate**—controls the accumulation of the new output $\mathbf{y}_l$ per dimension.
 - $\mathbf{p}_l$ : **layer position bias**—a learned per‑layer depth bias that gives each layer a position‑specific prior for how aggressively to write into memory.
 
-All weight vectors ($\mathbf{w}_r, \mathbf{w}_u, \mathbf{g}_m$) are diagonal, i.e. applied as $\mathbf{w} \odot \mathbf{x}$. This is theoretically motivated: AttnRes’s own ablation shows that per‑channel mixing in depth‑wise attention hurts performance, making diagonal weights not just cheaper but empirically optimal.
+All weight vectors ($\mathbf{w}_r, \mathbf{w}_f, \mathbf{w}_u, \mathbf{g}_m$) are diagonal, i.e. applied as $\mathbf{w} \odot \mathbf{x}$. This is theoretically motivated: AttnRes’s own ablation shows that per‑channel mixing in depth‑wise attention hurts performance, making diagonal weights not just cheaper but empirically optimal.
 
 ### 4.1 Memory Injection (The Read Gate)
 
@@ -86,19 +88,23 @@ $$
 
 The read gate operates on $\mathrm{LayerNorm}(\mathbf{h}_{l-1})$ to remain responsive at all depths. The memory is RMS‑normalised before projection by $\mathbf{g}_m$, so the gain vector controls only directional emphasis, not arbitrary scaling. The memory is read **before** being updated (i.e., using $\mathbf{m}_{l-1}$), ensuring $\mathbf{y}_l$ contributes to $\mathbf{h}_l$ only once through the direct residual path.
 
-### 4.2 Memory Update (The Update Gate)
+### 4.2 Memory Update (Gated Gating)
 
-After the sublayer transformation is computed, the persistent memory is updated using an Exponential Moving Average (EMA) logic, controlled by the update gate $\mathbf{u}_l$:
+After the sublayer transformation is computed, the persistent memory is updated using independent forget and update gates:
+
+$$
+\mathbf{f}_l = \sigma\!\bigl(\mathbf{w}_f \odot \mathbf{y}_l + \mathbf{b}_f\bigr)
+$$
 
 $$
 \mathbf{u}_l = \sigma\!\bigl(\mathbf{w}_u \odot \mathbf{y}_l + \mathbf{b}_u + \mathbf{p}_l\bigr)
 $$
 
 $$
-\mathbf{m}_l = \mathbf{u}_l \odot \mathbf{y}_l + (\mathbf{1} - \mathbf{u}_l) \odot \mathbf{m}_{l-1}
+\mathbf{m}_l = \mathbf{f}_l \odot \mathbf{m}_{l-1} + \mathbf{u}_l \odot \mathbf{y}_l
 $$
 
-The update gate depends on the current sublayer output (content) and a learned per‑sublayer depth bias $\mathbf{p}_l$. Because the blend is a convex combination ($\mathbf{u}_l + (\mathbf{1} - \mathbf{u}_l) = \mathbf{1}$), each dimension of $\mathbf{m}_l$ remains bounded by the extreme values of past $\mathbf{y}$ vectors. No softmax, no competition across layers or channels—therefore no attention‑sink dynamics and no outlier amplification.
+The forget gate regulates the retention of historical memory, while the update gate regulates the accumulation of new information. By decoupling the gating mechanisms, the model eliminates the zero-sum trade-off inherent in coupled updates (where writing new content forces forgetting old content). This allows early representations to persist across depth while new representations are integrated independently.
 
 ---
 
@@ -110,33 +116,34 @@ The mechanism is initialised so that at $t=0$ the model behaves **exactly** as a
 
 - $\mathbf{g}_m = \mathbf{0}$ — injection term is zero regardless of memory content.
 - $\mathbf{b}_r = -3$ — read gate $\mathbf{r}_l \approx 0.047$ (closed, but with non‑zero gradient).
-- $\mathbf{b}_u = -2$ — update gate $\mathbf{u}_l \approx 0.119$ (conservative writing, memory half‑life ≈ 5.5 layers).
+- $\mathbf{b}_f = 3$ — forget gate $\mathbf{f}_l \approx 0.952$ (highly retentive to preserve early layer outputs).
+- $\mathbf{b}_u = -2$ — update gate $\mathbf{u}_l \approx 0.119$ (conservative writing).
 - $\mathbf{p}_l = \mathbf{0}$ for all $l$ — all layers start with equal write bias.
-- $\mathbf{w}_r, \mathbf{w}_u \sim \mathcal{N}(0, 0.01^2)$ — minor random asymmetry, negligible next to bias magnitude.
+- $\mathbf{w}_r, \mathbf{w}_f, \mathbf{w}_u \sim \mathcal{N}(0, 0.01^2)$ — minor random asymmetry, negligible next to bias magnitude.
 - $\mathbf{m}_0 = \mathbf{0}$ (learnable initial memory, starting from zero).
 
 The standard skip connection $\mathbf{h}_{l-1}$ remains untouched, providing an unchanging gradient highway. As training proceeds, $\mathbf{g}_m$ departs from zero and the gates specialise, letting the memory path activate gradually.
 
 ### 5.2 Bounded Norm Dynamics
 
-The memory $\mathbf{m}_l$ is a convex combination of past $\mathbf{y}_i$, each normalised by LayerNorm. Hence $\|\mathbf{m}_l\|$ cannot diverge. The injection path further applies RMSNorm to $\mathbf{m}_{l-1}$, preventing $\mathbf{g}_m$ from amplifying scale. The hidden state $\mathbf{h}_l$ receives the injection as a strictly additive, gated contribution; the core residual branch remains intact, so gradient flow and activation magnitude stay well‑behaved without any external rescaling or DeepNorm constants.
+The memory $\mathbf{m}_l$ is updated with sigmoid-bounded gates $\mathbf{f}_l, \mathbf{u}_l \in [0, 1]^d$. The read path applies RMSNorm to $\mathbf{m}_{l-1}$ before injection, preventing scale explosion and ensuring stability even under additive updates. The hidden state $\mathbf{h}_l$ receives the injection as a strictly additive, gated contribution; the core residual branch remains intact, so gradient flow and activation magnitude stay well‑behaved.
 
 ---
-
-## 6. Complexity and Parameter Count
 
 | Component | Parameters |
 |-----------|------------|
 | Read gate weight $\mathbf{w}_r$ | $d$ |
 | Read gate bias $\mathbf{b}_r$ | $d$ |
 | Memory gain $\mathbf{g}_m$ | $d$ |
+| Forget gate weight $\mathbf{w}_f$ | $d$ |
+| Forget gate bias $\mathbf{b}_f$ | $d$ |
 | Update gate weight $\mathbf{w}_u$ | $d$ |
 | Update gate bias $\mathbf{b}_u$ | $d$ |
 | Sublayer position biases $\{\mathbf{p}_s\}_{s=1}^S$ | $S \cdot d$ |
 | Initial memory $\mathbf{m}_0$ | $d$ |
-| **Total** | $(S + 6)d$ |
+| **Total** | $(S + 8)d$ |
 
-Here $S$ is the number of residual transitions. For a decoder layer with attention and feed‑forward sublayers, $S = 2L$. A 12‑layer model with $d = 4096$ therefore adds approximately **123k parameters**, completely independent of the main model size. The per‑sublayer compute overhead is $O(d)$ (element‑wise operations), with no attention, no block partitions, and no cached layer outputs.
+Here $S$ is the number of residual transitions. For a decoder layer with attention and feed‑forward sublayers, $S = 2L$. A 12‑layer model with $d = 4096$ therefore adds approximately **131k parameters**, completely independent of the main model size. The per‑sublayer compute overhead is $O(d)$ (element‑wise operations), with no attention, no block partitions, and no cached layer outputs.
 
 ---
 
@@ -170,7 +177,7 @@ where $\boldsymbol{\phi}(x) = \text{ELU}(x) + 1$ is the positivity feature map e
 
 | Feature | Standard Residuals | Attention Residuals | Recurrent Residuals | SWDA-LR |
 | :--- | :--- | :--- | :--- | :--- |
-| **Logic** | Simple Addition | Depth‑wise Softmax | Gated Recurrency (EMA) | FIFO Window + Low-Rank Linear Attn |
+| **Logic** | Simple Addition | Depth‑wise Softmax | Gated Recurrency (Decoupled) | FIFO Window + Low-Rank Linear Attn |
 | **Information Flow** | Passive Accumulation | Selective Retrieval | Selective Persistence | Local Exact + Deep Covariance |
 | **Complexity (per layer)** | $O(d)$ | $O(Ld)$ (full) / $O(Bd)$ (block) | $O(d)$ | $O(Wd + rd)$ |
 | **Memory Cost (per token)** | $O(d)$ | $O(Ld)$ (full) / $O(Bd)$ (block) | $O(2d)$ | $O(Wd + nrd_v)$ |

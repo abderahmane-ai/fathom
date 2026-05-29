@@ -29,7 +29,7 @@ class TestRRCellInit:
         assert_close(h_new, h_prev + y, atol=1e-6, rtol=1e-6)
 
     def test_methodology_parameter_count(self, cell):
-        """RR parameter count should follow (num_sublayers + 6) * d_model."""
+        """RR parameter count should follow (num_sublayers + 8) * d_model."""
         assert sum(parameter.numel() for parameter in cell.parameters()) == (
             cell.parameter_count_formula
         )
@@ -40,6 +40,7 @@ class TestRRCellInit:
             name: tuple(parameter.shape) for name, parameter in cell.named_parameters()
         }
         assert parameter_shapes["read_weight"] == (cell.d_model,)
+        assert parameter_shapes["forget_weight"] == (cell.d_model,)
         assert parameter_shapes["update_weight"] == (cell.d_model,)
         assert parameter_shapes["memory_gain"] == (cell.d_model,)
         assert all(
@@ -59,18 +60,19 @@ class TestRRCellInit:
 
 
 class TestRRCellMemoryUpdate:
-    """Memory EMA update equation."""
+    """Memory update equation."""
 
-    def test_memory_ema_equation(self, cell, B, S, d_model):
-        """Manually verify m_new = u * y + (1-u) * m_prev."""
+    def test_memory_update_equation(self, cell, B, S, d_model):
+        """Manually verify m_new = f * m_prev + u * y."""
         m_before = cell.get_initial_state(B, S)
         h_prev = torch.randn(B, S, d_model)
         y = torch.randn(B, S, d_model)
 
         _, m_after = cell(h_prev, y, m_before, layer_idx=0, sublayer=0)
 
+        forget_gate = torch.sigmoid(cell.forget_weight * y + cell.forget_bias)
         update_gate = torch.sigmoid(cell.update_weight * y + cell.update_bias + cell.depth_bias[0])
-        expected_m = update_gate * y + (1.0 - update_gate) * m_before
+        expected_m = forget_gate * m_before + update_gate * y
         assert_close(m_after, expected_m, atol=1e-6, rtol=1e-6)
 
     def test_memory_accumulates_across_layers(self, cell, B, S, d_model):
@@ -116,7 +118,7 @@ class TestRRCellGradients:
         assert y.grad is not None
 
     def test_gate_params_receive_grad_when_memory_path_active(self, cell, B, S, d_model):
-        """Read and update gate parameters should receive gradients once memory is readable."""
+        """Read, forget, and update gate parameters should receive gradients once memory is readable."""
         with torch.no_grad():
             cell.memory_gain.fill_(1.0)
         m = torch.randn(B, S, d_model)
@@ -127,6 +129,7 @@ class TestRRCellGradients:
         (h_new.sum() + m_new.sum()).backward()
 
         assert cell.read_weight.grad is not None
+        assert cell.forget_weight.grad is not None
         assert cell.update_weight.grad is not None
         assert cell.memory_gain.grad is not None
 

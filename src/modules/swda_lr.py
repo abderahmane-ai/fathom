@@ -246,6 +246,10 @@ class SWDALRCell(nn.Module):
         # 2. Local FIFO sliding window attention
         write_idx = fifo_idx % self.window_size
         
+        # Clone buffers to prevent autograd in-place modification error
+        fifo_buf = fifo_buf.clone()
+        fifo_norm_buf = fifo_norm_buf.clone()
+        
         # 4. In-place FIFO write
         fifo_buf[write_idx] = y.to(fifo_buf.dtype)
         # 3. Cache FIFO norm_buf
@@ -297,7 +301,11 @@ class SWDALRCell(nn.Module):
         K_phi_f = K_phi.float()
         
         # Apply Write Gate to Value projection before deep storage
-        V_gated = V_reshaped * write_gate.view(B, S, 1, 1)
+        if self.v_dim == self.d_model:
+            V_gated = (V * write_gate).view(B, S, self.n_heads, self.d_head)
+        else:
+            write_gate_v = torch.matmul(write_gate, self.out_proj.weight)
+            V_gated = (V * write_gate_v).view(B, S, self.n_heads, self.d_head)
         V_gated_f = V_gated.float()
 
         # Numerator: Q_phi (B, S, H, 1, r_head) @ S_prev (B, S, H, r_head, d_head) -> (B, S, H, 1, d_head) -> squeeze
