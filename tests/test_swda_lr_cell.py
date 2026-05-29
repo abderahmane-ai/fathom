@@ -32,7 +32,7 @@ class TestSWDALRCellInit:
         """get_initial_state must produce empty FIFO, and zero S and z tensors."""
         fifo, S_init, z_init = cell.get_initial_state(B, S)
         assert len(fifo) == 0
-        assert S_init.shape == (B, S, d_model, cell.rank)
+        assert S_init.shape == (B, S, cell.rank, cell.v_dim)
         assert z_init.shape == (B, S, cell.rank)
         assert S_init.abs().max() == 0.0
         assert z_init.abs().max() == 0.0
@@ -95,7 +95,7 @@ class TestSWDALRCellGradients:
 
         # Mock non-zero historical states
         fifo = [torch.randn(B, S, d_model)]
-        S_prev = torch.randn(B, S, d_model, cell.rank)
+        S_prev = torch.randn(B, S, cell.rank, cell.v_dim)
         z_prev = torch.randn(B, S, cell.rank).abs() + 1.0  # avoid division by zero
         m = (fifo, S_prev, z_prev)
 
@@ -108,7 +108,8 @@ class TestSWDALRCellGradients:
         assert cell.read_weight.grad is not None
         assert cell.memory_gain.grad is not None
         assert cell.q_local_proj.weight.grad is not None
+        assert cell.k_deep_proj.weight.grad is not None
         assert cell.q_deep_proj.weight.grad is not None
-        assert cell.v_proj.weight.grad is not None
+        assert cell.v_deep_proj.weight.grad is not None
         assert cell.decay_bias.grad is not None
         assert cell.key_decay_bias.grad is not None

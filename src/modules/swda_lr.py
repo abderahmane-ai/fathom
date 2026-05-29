@@ -50,6 +50,7 @@ class SWDALRCell(nn.Module):
         num_layers: Total transformer layers; allocates depth biases per layer.
         window_size: Number of previous sublayer outputs kept in FIFO.
         rank: Rank of low-rank history projection.
+        v_dim: Optional compression dimension for Values. If None, defaults to d_model.
         decay_bias_init: Initial value for decay bias logits.
         read_gate_bias: Initial read-gate bias.
         eps: Epsilon for RMSNorm and LayerNorm.
@@ -62,6 +63,7 @@ class SWDALRCell(nn.Module):
         num_layers: int,
         window_size: int = 8,
         rank: int = 16,
+        v_dim: int | None = None,
         decay_bias_init: float = 3.0,
         read_gate_bias: float = -3.0,
         eps: float = 1e-5,
@@ -73,6 +75,7 @@ class SWDALRCell(nn.Module):
         self.num_sublayers = num_layers * 2
         self.window_size = window_size
         self.rank = rank
+        self.v_dim = v_dim if v_dim is not None else d_model
         self.eps = eps
 
         # Read gate parameters
@@ -81,24 +84,33 @@ class SWDALRCell(nn.Module):
         self.memory_gain = nn.Parameter(torch.zeros(d_model))  # Zero-start
 
         # State decay parameters (SSM-style)
-        self.decay_bias = nn.Parameter(torch.full((self.num_sublayers, d_model), decay_bias_init))
+        self.decay_bias = nn.Parameter(torch.full((self.num_sublayers, rank), decay_bias_init))
         self.key_decay_bias = nn.Parameter(torch.full((self.num_sublayers, rank), decay_bias_init))
 
-        # Query & Key/Value projections
+        # Local Projections
         self.q_local_proj = nn.Linear(d_model, d_model, bias=False)
-        self.q_deep_proj = nn.Linear(d_model, rank, bias=False)
-        self.v_proj = nn.Linear(d_model, rank, bias=False)
-
-        # Normalization layers
         self.local_norm = RMSNorm(d_model, eps=eps)
-        self.deep_norm = RMSNorm(d_model, eps=eps)
 
+        # Deep Projections (Corrected Dimensions)
+        self.k_deep_proj = nn.Linear(d_model, rank, bias=False)  # Keys -> rank
+        self.q_deep_proj = nn.Linear(d_model, rank, bias=False)  # Queries -> rank
+        self.v_deep_proj = nn.Linear(d_model, self.v_dim, bias=False)  # Values -> v_dim
+        self.deep_norm = RMSNorm(self.v_dim, eps=eps)
+
+        # Back-projection if value dimension is compressed
+        if self.v_dim != d_model:
+            self.out_proj = nn.Linear(self.v_dim, d_model, bias=False)
+            nn.init.normal_(self.out_proj.weight, mean=0.0, std=gate_init_std)
+        else:
+            # pyrefly: ignore [bad-assignment]
+            self.out_proj = nn.Identity()
+
+        # Initializations
         nn.init.normal_(self.read_weight, mean=0.0, std=gate_init_std)
-
-        # Zero-init projections slightly to avoid massive values at start
         nn.init.normal_(self.q_local_proj.weight, mean=0.0, std=gate_init_std)
+        nn.init.normal_(self.k_deep_proj.weight, mean=0.0, std=gate_init_std)
         nn.init.normal_(self.q_deep_proj.weight, mean=0.0, std=gate_init_std)
-        nn.init.normal_(self.v_proj.weight, mean=0.0, std=gate_init_std)
+        nn.init.normal_(self.v_deep_proj.weight, mean=0.0, std=gate_init_std)
 
         self.last_read_gate: torch.Tensor = torch.zeros((), dtype=torch.float32)
         self.last_decay_gate: torch.Tensor = torch.zeros((), dtype=torch.float32)
@@ -121,9 +133,11 @@ class SWDALRCell(nn.Module):
         """
         target_device = self.read_weight.device if device is None else device
         fifo: list[torch.Tensor] = []
+        # S shape: (B, S, rank, v_dim). Kept in FP32 for stable accumulation.
         S_init = torch.zeros(
-            batch_size, seq_len, self.d_model, self.rank, device=target_device, dtype=torch.float32
+            batch_size, seq_len, self.rank, self.v_dim, device=target_device, dtype=torch.float32
         )
+        # z shape: (B, S, rank). Kept in FP32.
         z_init = torch.zeros(
             batch_size, seq_len, self.rank, device=target_device, dtype=torch.float32
         )
@@ -187,18 +201,31 @@ class SWDALRCell(nn.Module):
             c_local = torch.zeros_like(y)
 
         # 3. Deep low-rank history retrieval with linear attention normalization
-        q_deep = self.q_deep_proj(h_norm)  # shape: (B, S, r)
-        v = self.v_proj(y)  # shape: (B, S, r)
+        K = self.k_deep_proj(y)  # shape: (B, S, r)
+        Q = self.q_deep_proj(h_norm)  # shape: (B, S, r)
+        V = self.v_deep_proj(y)  # shape: (B, S, v_dim)
 
-        # numerator shape: (B, S, d)
-        num = torch.einsum("b s d r, b s r -> b s d", S_prev, q_deep)
+        # Positivity constraint for unconditionally stable linear attention
+        K_phi = F.elu(K) + 1.0
+        Q_phi = F.elu(Q) + 1.0
 
-        # denominator shape: (B, S) -> expand to (B, S, 1)
-        den = torch.einsum("b s r, b s r -> b s", z_prev, q_deep).unsqueeze(-1)
+        # Cast to float32 for stable recurrent calculations
+        Q_phi_f = Q_phi.float()
+        K_phi_f = K_phi.float()
+        V_f = V.float()
+
+        # Numerator: Q_phi (B, S, 1, r) @ S_prev (B, S, r, v) -> (B, S, 1, v) -> squeeze to (B, S, v)
+        num = torch.matmul(Q_phi_f.unsqueeze(-2), S_prev).squeeze(-2)
+
+        # Denominator: Q_phi_f * z_prev -> sum over r -> shape (B, S, 1)
+        den = torch.sum(Q_phi_f * z_prev, dim=-1, keepdim=True)
         c_deep = num / (den + self.eps)
 
         # Apply parameter-free RMSNorm on the retrieved deep context
         c_deep = self.deep_norm(c_deep)
+
+        # Project back to d_model if v_dim was compressed
+        c_deep = self.out_proj(c_deep.to(y.dtype))
 
         # 4. Memory Injection
         h_new = h_prev + y + read_gate * (self.memory_gain * (c_local + c_deep))
@@ -207,24 +234,22 @@ class SWDALRCell(nn.Module):
         position = self._sublayer_position(layer_idx, sublayer)
 
         # Decays (SSM-style)
-        decay = torch.sigmoid(self.decay_bias[position])  # shape: (d,)
+        decay = torch.sigmoid(self.decay_bias[position])  # shape: (r,)
         key_decay = torch.sigmoid(self.key_decay_bias[position])  # shape: (r,)
         self.last_decay_gate = decay.detach().mean()
 
-        # Update FIFO
+        # Update FIFO (Allow gradients to flow to local history)
         fifo_new = list(fifo)
-        fifo_new.append(y.detach())  # Detach FIFO states to prevent memory leaks / backprop over depth
+        fifo_new.append(y)
         if len(fifo_new) > self.window_size:
             fifo_new.pop(0)
 
-        # Update running covariance state (outer product)
-        # S_prev shape: (B, S, d, r)
-        # outer shape: (B, S, d, r)
-        outer = torch.einsum("b s d, b s r -> b s d r", y, v)
+        # Update running covariance state S
+        # outer: K_phi_f (B, S, r, 1) @ V_f (B, S, 1, v) -> (B, S, r, v)
+        outer = torch.matmul(K_phi_f.unsqueeze(-1), V_f.unsqueeze(-2))
         S_new = decay.view(1, 1, -1, 1) * S_prev + outer
 
-        # Update running key-sum normalizer
-        # z_prev shape: (B, S, r)
-        z_new = key_decay.view(1, 1, -1) * z_prev + v
+        # Update running key-sum normalizer z
+        z_new = key_decay.view(1, 1, -1) * z_prev + K_phi_f
 
         return h_new, (fifo_new, S_new, z_new)

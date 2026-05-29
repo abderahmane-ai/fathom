@@ -120,7 +120,7 @@ def test_swda_lr_memory_flow(config):
         assert m is not None, f"Layer {idx} did not receive memory state m"
         fifo, S_state, z_state = m
         assert isinstance(fifo, list)
-        assert S_state.shape == (B, S, config.d_model, config.swda_lr.rank)
+        assert S_state.shape == (B, S, config.swda_lr.rank, config.d_model)
         assert z_state.shape == (B, S, config.swda_lr.rank)
 
 
