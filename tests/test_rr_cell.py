@@ -72,7 +72,7 @@ class TestRRCellMemoryUpdate:
 
         forget_gate = torch.sigmoid(cell.forget_weight * y + cell.forget_bias)
         update_gate = torch.sigmoid(cell.update_weight * y + cell.update_bias + cell.depth_bias[0])
-        expected_m = forget_gate * m_before + update_gate * y
+        expected_m = cell.memory_norm(forget_gate * m_before + update_gate * y)
         assert_close(m_after, expected_m, atol=1e-6, rtol=1e-6)
 
     def test_memory_accumulates_across_layers(self, cell, B, S, d_model):

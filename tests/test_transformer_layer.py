@@ -120,6 +120,7 @@ class TestTransformerLayerRR:
         """Verify layer passes and updates memory state m."""
         layer = TransformerLayer(rr_cfg)
         assert layer.rr_cell is not None
+        # pyrefly: ignore [not-callable]
         m_in = layer.rr_cell.get_initial_state(B, S)
 
         x = torch.randn(B, S, d_model)
@@ -133,6 +134,7 @@ class TestTransformerLayerRR:
     def test_grad_flows_through_rr_path(self, rr_cfg, B, S, d_model):
         layer = TransformerLayer(rr_cfg)
         assert layer.rr_cell is not None
+        # pyrefly: ignore [not-callable]
         m_in = layer.rr_cell.get_initial_state(B, S)
 
         x = torch.randn(B, S, d_model, requires_grad=True)
@@ -158,6 +160,7 @@ class TestTransformerLayerSWDALR:
         """Verify layer passes and updates the SWDA-LR memory tuple."""
         layer = TransformerLayer(swda_lr_cfg)
         assert layer.swda_lr_cell is not None
+        # pyrefly: ignore [not-callable]
         m_in = layer.swda_lr_cell.get_initial_state(B, S)
 
         x = torch.randn(B, S, d_model)
@@ -165,9 +168,9 @@ class TestTransformerLayerSWDALR:
 
         assert h_out.shape == (B, S, d_model)
         assert m_out is not None
-        fifo_buf, fifo_idx, S_state, z_state = m_out
+        fifo_buf, fifo_norm_buf, fifo_idx, S_state, z_state = m_out
         cell = layer.swda_lr_cell
-        assert fifo_buf.shape == (cell.window_size, B, S, d_model)
+        assert fifo_buf.shape == (B, S, cell.window_size, d_model)
         assert S_state.shape == (B, S, cell.n_heads, cell.r_head, cell.d_head)
         assert z_state.shape == (B, S, cell.n_heads, cell.r_head)
 
@@ -175,14 +178,16 @@ class TestTransformerLayerSWDALR:
         """Gradients must flow through h_out and state tensors."""
         layer = TransformerLayer(swda_lr_cfg)
         assert layer.swda_lr_cell is not None
+        
+        # pyrefly: ignore [not-callable]
         m_in = layer.swda_lr_cell.get_initial_state(B, S)
 
         x = torch.randn(B, S, d_model, requires_grad=True)
         h_out, m_out = layer(x, layer_idx=0, m=m_in)
         assert m_out is not None
-        fifo_buf, fifo_idx, S_state, z_state = m_out
+        fifo_buf, fifo_norm_buf, fifo_idx, S_state, z_state = m_out
         (h_out.sum() + S_state.sum() + z_state.sum()).backward()
 
         assert x.grad is not None
-        assert layer.swda_lr_cell.read_weight.grad is not None
+        assert layer.swda_lr_cell.gate_weights.grad is not None
 

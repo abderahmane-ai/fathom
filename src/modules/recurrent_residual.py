@@ -188,7 +188,7 @@ class RecurrentResidualCell(nn.Module):
         update_gate = torch.sigmoid(
             self.update_weight * y + self.update_bias + self.depth_bias[position]
         )
-        m_new = forget_gate * m + update_gate * y
+        m_new = self.memory_norm(forget_gate * m + update_gate * y)
 
         self.last_read_gate = read_gate.detach().mean()
         self.last_forget_gate = forget_gate.detach().mean()

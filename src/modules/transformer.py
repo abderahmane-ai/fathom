@@ -127,7 +127,15 @@ class TransformerDecoder(nn.Module):
         """
         num_layers = len(self.layers)
 
+        excluded_ids: set[int] = set()
+        if self.rr_cell is not None:
+            excluded_ids.update(id(m) for m in self.rr_cell.modules())
+        if self.swda_lr_cell is not None:
+            excluded_ids.update(id(m) for m in self.swda_lr_cell.modules())
+
         for module in self.modules():
+            if id(module) in excluded_ids:
+                continue
             if isinstance(module, nn.Linear):
                 nn.init.normal_(module.weight, mean=0.0, std=0.02)
                 if module.bias is not None:

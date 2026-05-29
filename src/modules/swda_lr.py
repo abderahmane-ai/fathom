@@ -128,7 +128,7 @@ class SWDALRCell(nn.Module):
         # 6. Register the arange mask as a non-persistent buffer
         self.register_buffer(
             "window_indices",
-            torch.arange(window_size).view(-1, 1, 1),
+            torch.arange(window_size).view(1, 1, -1),
             persistent=False,
         )
 
@@ -178,10 +178,10 @@ class SWDALRCell(nn.Module):
         """
         target_device = self.gate_weights.device if device is None else device
         fifo_buf = torch.zeros(
-            self.window_size, batch_size, seq_len, self.d_model, device=target_device, dtype=torch.float32
+            batch_size, seq_len, self.window_size, self.d_model, device=target_device, dtype=torch.float32
         )
         fifo_norm_buf = torch.zeros(
-            self.window_size, batch_size, seq_len, self.d_model, device=target_device, dtype=torch.float32
+            batch_size, seq_len, self.window_size, self.d_model, device=target_device, dtype=torch.float32
         )
         fifo_idx = torch.tensor(0, device=target_device, dtype=torch.long)
         
@@ -251,9 +251,9 @@ class SWDALRCell(nn.Module):
         fifo_norm_buf = fifo_norm_buf.clone()
         
         # 4. In-place FIFO write
-        fifo_buf[write_idx] = y.to(fifo_buf.dtype)
+        fifo_buf[:, :, write_idx, :] = y.to(fifo_buf.dtype)
         # 3. Cache FIFO norm_buf
-        fifo_norm_buf[write_idx] = self.local_norm(y).to(fifo_norm_buf.dtype)
+        fifo_norm_buf[:, :, write_idx, :] = self.local_norm(y).to(fifo_norm_buf.dtype)
         
         next_idx = fifo_idx + 1
         keys_local = fifo_norm_buf
@@ -261,10 +261,9 @@ class SWDALRCell(nn.Module):
         q_local = self.q_local_proj(y)  # shape: (B, S, d)
 
         # 10. Matmul-based attention instead of einsum
-        keys_local_permuted = keys_local.permute(1, 2, 0, 3)  # shape: (B, S, W, d)
-        logits = torch.matmul(keys_local_permuted, q_local.unsqueeze(-1)).squeeze(-1).permute(2, 0, 1)
+        logits = torch.matmul(keys_local, q_local.unsqueeze(-1)).squeeze(-1)  # shape: (B, S, W)
         logits = logits / math.sqrt(self.d_model)
-        logits = logits + self.fifo_depth_bias.view(-1, 1, 1)
+        logits = logits + self.fifo_depth_bias.view(1, 1, -1)
 
         # Causal mask for unfilled buffer slots in early layers using registered window_indices buffer
         is_unfilled = (fifo_idx < self.window_size - 1).view(1, 1, 1)
@@ -272,12 +271,10 @@ class SWDALRCell(nn.Module):
         mask = torch.where((self.window_indices <= write_idx.view(1, 1, 1)) | ~is_unfilled, 0.0, float("-inf"))
         logits = logits + mask
 
-        weights = torch.softmax(logits, dim=0)
+        weights = torch.softmax(logits, dim=-1)
 
         # 10. Matmul-based context aggregation instead of einsum
-        weights_permuted = weights.permute(1, 2, 0).unsqueeze(-2)  # shape: (B, S, 1, W)
-        fifo_buf_permuted = fifo_buf.permute(1, 2, 0, 3)  # shape: (B, S, W, d)
-        c_local = torch.matmul(weights_permuted, fifo_buf_permuted).squeeze(-2)
+        c_local = torch.matmul(weights.unsqueeze(-2), fifo_buf).squeeze(-2)  # shape: (B, S, d)
 
         # 3. Deep multi-head low-rank history retrieval (fused K, V projection; separate Q projection)
         kv = self.kv_deep_proj(y)
