@@ -16,12 +16,6 @@ class TransformerDecoder(nn.Module):
 
         self.token_embeddings = nn.Embedding(config.vocab_size, config.d_model)
         
-        # Only use absolute positional embeddings if NOT using RoPE in Attention
-        # If your Attention module uses RoPE, set use_absolute_pe to False
-        self.use_absolute_pe = getattr(config, "use_absolute_pe", False)
-        if self.use_absolute_pe:
-            self.pos_embeddings = nn.Embedding(config.max_seq_len, config.d_model)
-            
         self.emb_drop = nn.Dropout(getattr(config, "dropout", 0.1))
 
         if self.residual_mode not in {"standard", "recurrent_residual", "swda_lr", "block_attnres", "full_attnres"}:
@@ -115,10 +109,6 @@ class TransformerDecoder(nn.Module):
         device = input_ids.device
 
         h = self.token_embeddings(input_ids)
-        
-        if self.use_absolute_pe:
-            pos_ids = torch.arange(S, device=device)
-            h = h + self.pos_embeddings(pos_ids)
             
         h = self.emb_drop(h)
 

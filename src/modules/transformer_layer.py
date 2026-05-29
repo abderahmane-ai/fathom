@@ -2,8 +2,6 @@ from __future__ import annotations
 from typing import Any, cast
 import torch
 import torch.nn as nn
-from jaxtyping import Float, jaxtyped
-from beartype import beartype
 
 # Import RMSNorm from SWDALRCell module
 from .swda_lr import RMSNorm, SWDALRCell
@@ -118,14 +116,13 @@ class TransformerLayer(nn.Module):
             
         return h_new, m_new
 
-    @jaxtyped(typechecker=beartype)
     def forward_attnres(
         self,
-        blocks: list[Float[torch.Tensor, "batch seq d_model"]],
-        partial_block: Float[torch.Tensor, "batch seq d_model"],
+        blocks: list[torch.Tensor],
+        partial_block: torch.Tensor,
         layer_idx: int,
     ) -> tuple[
-        list[Float[torch.Tensor, "batch seq d_model"]], Float[torch.Tensor, "batch seq d_model"]
+        list[torch.Tensor], torch.Tensor
     ]:
         # Pre-Attn aggregation from previous blocks.
         h_in = self.attn_res(blocks, partial_block)
@@ -146,13 +143,12 @@ class TransformerLayer(nn.Module):
 
         return blocks, partial_block
 
-    @jaxtyped(typechecker=beartype)
     def forward_full_attnres(
         self,
-        history: list[Float[torch.Tensor, "batch seq d_model"]],
-        x: Float[torch.Tensor, "batch seq d_model"],
+        history: list[torch.Tensor],
+        x: torch.Tensor,
     ) -> tuple[
-        list[Float[torch.Tensor, "batch seq d_model"]], Float[torch.Tensor, "batch seq d_model"]
+        list[torch.Tensor], torch.Tensor
     ]:
         h_in = self.full_attn_res([*history, x])
         y_attn = self.attn(self.ln_1(h_in))
