@@ -263,6 +263,7 @@ class SWDALRCell(nn.Module):
 
         # Causal mask for unfilled buffer slots in early layers using registered window_indices buffer
         is_unfilled = (fifo_idx < self.window_size - 1).view(1, 1, 1)
+        # pyrefly: ignore [unsupported-operation]
         mask = torch.where((self.window_indices <= write_idx.view(1, 1, 1)) | ~is_unfilled, 0.0, float("-inf"))
         logits = logits + mask
 
