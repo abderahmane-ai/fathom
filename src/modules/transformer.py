@@ -3,7 +3,7 @@ from typing import Any, cast
 import torch
 import torch.nn as nn
 
-from .swda_lr import RMSNorm, SWDALRCell
+from .vega import RMSNorm, VEGACell
 from .recurrent_residual import RecurrentResidualCell
 from .transformer_layer import TransformerLayer
 
@@ -12,18 +12,22 @@ class TransformerDecoder(nn.Module):
 
     def __init__(self, config: Any) -> None:
         super().__init__()
+        # Backward compatibility: map old swda_lr to vega
+        if config.residual_mode == "swda_lr":
+            config.residual_mode = "vega"
+        
         self.residual_mode: str = config.residual_mode
 
         self.token_embeddings = nn.Embedding(config.vocab_size, config.d_model)
         
         self.emb_drop = nn.Dropout(getattr(config, "dropout", 0.1))
 
-        if self.residual_mode not in {"standard", "recurrent_residual", "swda_lr", "block_attnres", "full_attnres"}:
+        if self.residual_mode not in {"standard", "recurrent_residual", "vega", "block_attnres", "full_attnres"}:
             raise ValueError(f"Unsupported residual_mode: {self.residual_mode}")
 
         # ── Global Shared Cells (Weight-Tied Depth Routing) ───────────────
         self.rr_cell: RecurrentResidualCell | None = None
-        self.swda_lr_cell: SWDALRCell | None = None
+        self.vega_cell: VEGACell | None = None
         
         if self.residual_mode == "recurrent_residual":
             rr_cfg = config.recurrent_residual
@@ -35,15 +39,17 @@ class TransformerDecoder(nn.Module):
                 eps=rr_cfg.eps, gate_init_std=rr_cfg.gate_init_std,
                 memory_gain_init=rr_cfg.memory_gain_init,
             )
-        elif self.residual_mode == "swda_lr":
-            swda_cfg = config.swda_lr
-            self.swda_lr_cell = SWDALRCell(
+        elif self.residual_mode == "vega":
+            vega_cfg = config.vega
+            self.vega_cell = VEGACell(
                 config.d_model, config.num_layers,
-                window_size=swda_cfg.window_size, rank=swda_cfg.rank,
-                n_heads=getattr(swda_cfg, "n_heads", 4), v_dim=getattr(swda_cfg, "v_dim", None),
-                decay_bias_init=swda_cfg.decay_bias_init, read_gate_bias=swda_cfg.read_gate_bias,
-                write_gate_bias=getattr(swda_cfg, "write_gate_bias", -2.0),
-                eps=swda_cfg.eps, gate_init_std=swda_cfg.gate_init_std,
+                rank=vega_cfg.rank,
+                n_heads=getattr(vega_cfg, "n_heads", 4),
+                n_fast_heads=getattr(vega_cfg, "n_fast_heads", 2),
+                read_gate_bias=vega_cfg.read_gate_bias,
+                write_gate_bias=getattr(vega_cfg, "write_gate_bias", -2.0),
+                damp_gate_bias=getattr(vega_cfg, "damp_gate_bias", 3.0),
+                eps=vega_cfg.eps, gate_init_std=vega_cfg.gate_init_std,
             )
 
         if self.residual_mode == "full_attnres":
@@ -54,7 +60,7 @@ class TransformerDecoder(nn.Module):
         # Pass the globally shared cells to all layers
         self.layers: nn.ModuleList = nn.ModuleList(
             [
-                TransformerLayer(config, rr_cell=self.rr_cell, swda_lr_cell=self.swda_lr_cell)
+                TransformerLayer(config, rr_cell=self.rr_cell, vega_cell=self.vega_cell)
                 for _ in range(config.num_layers)
             ]
         )
@@ -76,8 +82,8 @@ class TransformerDecoder(nn.Module):
         excluded_ids: set[int] = set()
         if self.rr_cell is not None:
             excluded_ids.update(id(m) for m in self.rr_cell.modules())
-        if self.swda_lr_cell is not None:
-            excluded_ids.update(id(m) for m in self.swda_lr_cell.modules())
+        if self.vega_cell is not None:
+            excluded_ids.update(id(m) for m in self.vega_cell.modules())
 
         for module in self.modules():
             if id(module) in excluded_ids:
@@ -113,8 +119,8 @@ class TransformerDecoder(nn.Module):
         h = self.emb_drop(h)
 
         # ── Layer stack ───────────────────────────────────────────────────
-        if self.residual_mode in {"recurrent_residual", "swda_lr"}:
-            cell = self.rr_cell if self.residual_mode == "recurrent_residual" else self.swda_lr_cell
+        if self.residual_mode in {"recurrent_residual", "vega"}:
+            cell = self.rr_cell if self.residual_mode == "recurrent_residual" else self.vega_cell
             assert cell is not None
             m = cell.get_initial_state(B, S, device=device)
             for idx, layer in enumerate(self.layers):

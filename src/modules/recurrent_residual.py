@@ -22,6 +22,7 @@ class RecurrentResidualCell(nn.Module):
         read_gate_bias: float = -3.0,
         forget_gate_bias: float = 3.0,
         update_gate_bias: float = -2.0,
+        damp_gate_bias: float = 3.0,
         eps: float = 1e-5,
         gate_init_std: float = 0.01,
         memory_gain_init: float = 0.0,
@@ -31,60 +32,59 @@ class RecurrentResidualCell(nn.Module):
         self.num_layers = num_layers
         self.num_sublayers = num_layers * 2
         self.eps = eps
+        rank = max(32, d_model // 8)
 
-        # Read Gate
-        self.read_weight = nn.Parameter(torch.empty(d_model))
-        self.read_bias = nn.Parameter(torch.full((d_model,), read_gate_bias))
-        
-        # Forget Gate (High bias = retain history)
-        self.forget_weight = nn.Parameter(torch.empty(d_model))
-        self.forget_bias = nn.Parameter(torch.full((d_model,), forget_gate_bias))
-        
-        # Update Gate (Low bias = write slowly)
-        self.update_weight = nn.Parameter(torch.empty(d_model))
-        self.update_bias = nn.Parameter(torch.full((d_model,), update_gate_bias))
+        def make_gate():
+            return nn.Sequential(
+                nn.Linear(d_model, rank, bias=False),
+                nn.Linear(rank, d_model, bias=True)
+            )
+
+        self.read_proj = make_gate()
+        self.forget_proj = make_gate()
+        self.update_proj = make_gate()
+        self.damp_proj = make_gate()
         
         # Memory Gain (Zero-start protocol)
         self.memory_gain = nn.Parameter(torch.full((d_model,), memory_gain_init))
         
-        # Depth Bias
-        self.depth_bias = nn.Parameter(torch.zeros(self.num_sublayers, d_model))
+        # Depth Bias for all gates
+        self.depth_read_bias = nn.Parameter(torch.zeros(self.num_sublayers, d_model))
+        self.depth_forget_bias = nn.Parameter(torch.zeros(self.num_sublayers, d_model))
+        self.depth_update_bias = nn.Parameter(torch.zeros(self.num_sublayers, d_model))
+        self.depth_damp_bias = nn.Parameter(torch.zeros(self.num_sublayers, d_model))
         
         # Initial Memory State
         self.m_init = nn.Parameter(torch.zeros(d_model))
         
-        # Normalization for the READ path only (Fixes Magnitude Blindness)
+        # Normalization
         self.memory_norm = RMSNorm(d_model, eps=eps)
+        self.memory_out = nn.Linear(d_model, d_model, bias=False)
         self.h_norm = RMSNorm(d_model, eps=eps)
 
         # Initializations
-        nn.init.normal_(self.read_weight, mean=0.0, std=gate_init_std)
-        nn.init.normal_(self.forget_weight, mean=0.0, std=gate_init_std)
-        nn.init.normal_(self.update_weight, mean=0.0, std=gate_init_std)
+        for proj in [self.read_proj, self.forget_proj, self.update_proj, self.damp_proj]:
+            nn.init.normal_(proj[0].weight, std=gate_init_std)
+            nn.init.normal_(proj[1].weight, std=gate_init_std)
+            nn.init.zeros_(proj[1].bias)
+            
+        # Set base biases
+        with torch.no_grad():
+            self.read_proj[1].bias.fill_(read_gate_bias)
+            self.forget_proj[1].bias.fill_(forget_gate_bias)
+            self.update_proj[1].bias.fill_(update_gate_bias)
+            self.damp_proj[1].bias.fill_(damp_gate_bias)
 
     @property
     def parameter_count_formula(self) -> int:
         """Return the methodology parameter count."""
-        return (self.num_sublayers + 8) * self.d_model
+        return (self.num_sublayers * 4 + 10) * self.d_model
 
     def get_initial_state(self, batch_size: int, seq_len: int, device: torch.device | None = None) -> torch.Tensor:
-        # Expand learnable initial memory to batch and sequence dimensions
         target_device = device if device is not None else self.m_init.device
         return self.m_init.to(target_device).view(1, 1, -1).expand(batch_size, seq_len, -1).clone()
 
     def _sublayer_position(self, layer_idx: int, sublayer: int) -> int:
-        """Map a layer/sublayer pair to a depth-bias row.
-
-        Args:
-            layer_idx: Zero-based transformer layer index.
-            sublayer: ``0`` for attention and ``1`` for FFN.
-
-        Returns:
-            Row index in ``depth_bias``.
-
-        Preconditions:
-            ``0 <= layer_idx < num_layers`` and ``sublayer`` is ``0`` or ``1``.
-        """
         if sublayer not in (0, 1):
             raise ValueError(f"sublayer must be 0 or 1, got {sublayer}.")
         position = layer_idx * 2 + sublayer
@@ -102,28 +102,21 @@ class RecurrentResidualCell(nn.Module):
         h_norm: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         position = self._sublayer_position(layer_idx, sublayer)
+        m_norm = self.memory_norm(m)
 
-        if h_norm is None:
-            # Use RMSNorm instead of LayerNorm to match modern backbones
-            h_norm = self.h_norm(h_prev)
-        
-        # 1. Read Path
-        read_gate = torch.sigmoid(self.read_weight * h_norm + self.read_bias)
-        # Normalize memory ONLY when reading to preserve accumulated magnitude in storage
-        memory_read = self.memory_gain * self.memory_norm(m) 
+        # Gates on CLEAN signals (y or m_norm)
+        read_gate   = torch.sigmoid(self.read_proj(y)   + self.depth_read_bias[position])
+        damp_gate   = torch.sigmoid(self.damp_proj(y)   + self.depth_damp_bias[position])
+        forget_gate = torch.sigmoid(self.forget_proj(m_norm) + self.depth_forget_bias[position])
+        update_gate = torch.sigmoid(self.update_proj(y) + self.depth_update_bias[position])
+
+        # Read path: memory_read normalized on the way out
+        memory_read = self.memory_gain * self.memory_out(m_norm) 
         
         # Inject memory into hidden state
-        h_new = h_prev + y + read_gate * memory_read
+        h_new = damp_gate * h_prev + y + read_gate * memory_read
 
-        # 2. Update Path
-        # Forget gate decides what to keep from the past
-        forget_gate = torch.sigmoid(self.forget_weight * y + self.forget_bias)
-        # Update gate decides what to write from the present
-        update_gate = torch.sigmoid(
-            self.update_weight * y + self.update_bias + self.depth_bias[position]
-        )
-        
-        # Do NOT apply RMSNorm here. Let the memory accumulate natural magnitude.
-        m_new = (forget_gate * m) + (update_gate * y)
+        # Update path: true ARU (forget/update decoupled)
+        m_new = forget_gate * m + update_gate * y
 
         return h_new, m_new

@@ -149,19 +149,19 @@ class TestTransformerLayerRR:
 class TestTransformerLayerSWDALR:
     """SWDA-LR residual mode."""
 
-    def test_forward_requires_m(self, swda_lr_cfg, B, S, d_model):
+    def test_forward_requires_m(self, vega_cfg, B, S, d_model):
         """forward() must raise AssertionError if m is not provided."""
-        layer = TransformerLayer(swda_lr_cfg)
+        layer = TransformerLayer(vega_cfg)
         x = torch.randn(B, S, d_model)
         with pytest.raises(AssertionError, match="Memory state m is required"):
             layer(x, layer_idx=0)
 
-    def test_forward_with_memory_flow(self, swda_lr_cfg, B, S, d_model):
+    def test_forward_with_memory_flow(self, vega_cfg, B, S, d_model):
         """Verify layer passes and updates the SWDA-LR memory tuple."""
-        layer = TransformerLayer(swda_lr_cfg)
-        assert layer.swda_lr_cell is not None
+        layer = TransformerLayer(vega_cfg)
+        assert layer.vega_cell is not None
         # pyrefly: ignore [not-callable]
-        m_in = layer.swda_lr_cell.get_initial_state(B, S)
+        m_in = layer.vega_cell.get_initial_state(B, S)
 
         x = torch.randn(B, S, d_model)
         h_out, m_out = layer(x, layer_idx=0, m=m_in)
@@ -169,18 +169,18 @@ class TestTransformerLayerSWDALR:
         assert h_out.shape == (B, S, d_model)
         assert m_out is not None
         fifo_buf, fifo_norm_buf, fifo_idx, S_state, z_state = m_out
-        cell = layer.swda_lr_cell
+        cell = layer.vega_cell
         assert fifo_buf.shape == (B, S, cell.window_size, d_model)
         assert S_state.shape == (B, S, cell.n_heads, cell.r_head, cell.d_head)
         assert z_state.shape == (B, S, cell.n_heads, cell.r_head)
 
-    def test_grad_flows_through_swda_lr_path(self, swda_lr_cfg, B, S, d_model):
+    def test_grad_flows_through_vega_path(self, vega_cfg, B, S, d_model):
         """Gradients must flow through h_out and state tensors."""
-        layer = TransformerLayer(swda_lr_cfg)
-        assert layer.swda_lr_cell is not None
+        layer = TransformerLayer(vega_cfg)
+        assert layer.vega_cell is not None
         
         # pyrefly: ignore [not-callable]
-        m_in = layer.swda_lr_cell.get_initial_state(B, S)
+        m_in = layer.vega_cell.get_initial_state(B, S)
 
         x = torch.randn(B, S, d_model, requires_grad=True)
         h_out, m_out = layer(x, layer_idx=0, m=m_in)
@@ -189,5 +189,5 @@ class TestTransformerLayerSWDALR:
         (h_out.sum() + S_state.sum() + z_state.sum()).backward()
 
         assert x.grad is not None
-        assert layer.swda_lr_cell.gate_weights.grad is not None
+        assert layer.vega_cell.gate_weights.grad is not None
 

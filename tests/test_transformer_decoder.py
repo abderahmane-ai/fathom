@@ -53,7 +53,7 @@ def test_transformer_decoder_shapes(config):
     B, S = 2, 16
     input_ids = torch.randint(0, config.vocab_size, (B, S))
 
-    for mode in ["standard", "recurrent_residual", "swda_lr", "block_attnres", "full_attnres"]:
+    for mode in ["standard", "recurrent_residual", "vega", "block_attnres", "full_attnres"]:
         config.residual_mode = mode
         model = TransformerDecoder(config)
         logits = model(input_ids)
@@ -97,9 +97,9 @@ def test_recurrent_residual_memory_flow(config):
         assert args[2].shape == (B, S, config.d_model)
 
 
-def test_swda_lr_memory_flow(config):
+def test_vega_memory_flow(config):
     """Verify that memory flows across layers in SWDA-LR mode."""
-    config.residual_mode = "swda_lr"
+    config.residual_mode = "vega"
     model = TransformerDecoder(config)
     B, S = 1, 8
     input_ids = torch.randint(0, config.vocab_size, (B, S))
@@ -120,9 +120,9 @@ def test_swda_lr_memory_flow(config):
         assert m is not None, f"Layer {idx} did not receive memory state m"
         fifo_buf, fifo_norm_buf, fifo_idx, S_state, z_state = m
         assert isinstance(fifo_buf, torch.Tensor)
-        assert fifo_buf.shape == (B, S, config.swda_lr.window_size, config.d_model)
-        n_heads = config.swda_lr.get("n_heads", 4)
-        r_head = config.swda_lr.rank // n_heads
+        assert fifo_buf.shape == (B, S, config.vega.window_size, config.d_model)
+        n_heads = config.vega.get("n_heads", 4)
+        r_head = config.vega.rank // n_heads
         d_head = config.d_model // n_heads
         assert S_state.shape == (B, S, n_heads, r_head, d_head)
         assert z_state.shape == (B, S, n_heads, r_head)
@@ -140,13 +140,13 @@ def test_shared_rr_cell_params(config):
         assert layer.rr_cell is rr_cell, "Layers are not sharing the same RR cell instance"
 
 
-def test_shared_swda_lr_cell_params(config):
-    """Verify that all layers share the same swda_lr_cell instance in SWDA-LR mode."""
-    config.residual_mode = "swda_lr"
+def test_shared_vega_cell_params(config):
+    """Verify that all layers share the same vega_cell instance in SWDA-LR mode."""
+    config.residual_mode = "vega"
     model = TransformerDecoder(config)
 
-    swda_lr_cell = model.swda_lr_cell
-    assert swda_lr_cell is not None
+    vega_cell = model.vega_cell
+    assert vega_cell is not None
 
     for layer in model.layers:
-        assert layer.swda_lr_cell is swda_lr_cell, "Layers are not sharing the same SWDA-LR cell instance"
+        assert layer.vega_cell is vega_cell, "Layers are not sharing the same SWDA-LR cell instance"

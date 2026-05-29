@@ -67,7 +67,7 @@ def test_benchmark_configs_load(benchmark_name):
     assert cfg.benchmark.max_params == 60_000_000
     assert "standard" in benchmark_modes(cfg)
     assert "recurrent_residual" in benchmark_modes(cfg)
-    assert "swda_lr" in benchmark_modes(cfg)
+    assert "vega" in benchmark_modes(cfg)
     assert "block_attnres" in benchmark_modes(cfg)
 
 

@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 
 # Import RMSNorm from SWDALRCell module
-from .swda_lr import RMSNorm, SWDALRCell
+from .vega import RMSNorm, VEGACell
 from .recurrent_residual import RecurrentResidualCell
 from .attention import Attention
 from .ffn import FeedForward
@@ -16,7 +16,7 @@ class TransformerLayer(nn.Module):
         self,
         config: Any,
         rr_cell: RecurrentResidualCell | None = None,
-        swda_lr_cell: SWDALRCell | None = None,
+        vega_cell: VEGACell | None = None,
     ) -> None:
         super().__init__()
 
@@ -28,7 +28,7 @@ class TransformerLayer(nn.Module):
         self.ffn = FeedForward(config.d_model, config.ff_dim, getattr(config, "dropout", 0.1))
 
         self.rr_cell: nn.Module | None = None
-        self.swda_lr_cell: nn.Module | None = None
+        self.vega_cell: VEGACell | None = None
 
         if config.residual_mode == "recurrent_residual":
             if rr_cell is None:
@@ -43,18 +43,20 @@ class TransformerLayer(nn.Module):
                 )
             self.rr_cell = rr_cell
 
-        elif config.residual_mode == "swda_lr":
-            if swda_lr_cell is None:
-                swda_cfg = config.swda_lr
-                swda_lr_cell = SWDALRCell(
+        elif config.residual_mode == "vega":
+            if vega_cell is None:
+                vega_cfg = config.vega
+                vega_cell = VEGACell(
                     config.d_model, config.num_layers,
-                    window_size=swda_cfg.window_size, rank=swda_cfg.rank,
-                    n_heads=getattr(swda_cfg, "n_heads", 4), v_dim=getattr(swda_cfg, "v_dim", None),
-                    decay_bias_init=swda_cfg.decay_bias_init, read_gate_bias=swda_cfg.read_gate_bias,
-                    write_gate_bias=getattr(swda_cfg, "write_gate_bias", -2.0),
-                    eps=swda_cfg.eps, gate_init_std=swda_cfg.gate_init_std,
+                    rank=vega_cfg.rank,
+                    n_heads=getattr(vega_cfg, "n_heads", 4),
+                    n_fast_heads=getattr(vega_cfg, "n_fast_heads", 2),
+                    read_gate_bias=vega_cfg.read_gate_bias,
+                    write_gate_bias=getattr(vega_cfg, "write_gate_bias", -2.0),
+                    damp_gate_bias=getattr(vega_cfg, "damp_gate_bias", 3.0),
+                    eps=vega_cfg.eps, gate_init_std=vega_cfg.gate_init_std,
                 )
-            self.swda_lr_cell = swda_lr_cell
+            self.vega_cell = vega_cell
 
         elif config.residual_mode == "block_attnres":
             from .attnres_block import BlockAttnRes
@@ -93,10 +95,10 @@ class TransformerLayer(nn.Module):
             assert m is not None, "Memory state m is required"
             # pyrefly: ignore [not-callable]
             h_mid, m_mid = self.rr_cell(x, y_attn, m, layer_idx, sublayer=0, h_norm=x_norm)
-        elif self.residual_mode == "swda_lr":
-            assert m is not None, "Memory state m is required"
+        elif self.residual_mode == "vega":
+            assert m is not None and self.vega_cell is not None
             # pyrefly: ignore [not-callable]
-            h_mid, m_mid = self.swda_lr_cell(x, y_attn, m, layer_idx, sublayer=0, h_norm=x_norm)
+            h_mid, m_mid = self.vega_cell(x, y_attn, m, layer_idx, sublayer=0, h_norm=x_norm)
 
         # ── FFN sublayer ──────────────────────────────────────────────────
         h_norm = self.ln_2(h_mid)
@@ -109,10 +111,10 @@ class TransformerLayer(nn.Module):
             assert m_mid is not None
             # pyrefly: ignore [not-callable]
             h_new, m_new = self.rr_cell(h_mid, y_ffn, m_mid, layer_idx, sublayer=1, h_norm=h_norm)
-        elif self.residual_mode == "swda_lr":
+        elif self.residual_mode == "vega":
             assert m_mid is not None
             # pyrefly: ignore [not-callable]
-            h_new, m_new = self.swda_lr_cell(h_mid, y_ffn, m_mid, layer_idx, sublayer=1, h_norm=h_norm)
+            h_new, m_new = self.vega_cell(h_mid, y_ffn, m_mid, layer_idx, sublayer=1, h_norm=h_norm)
             
         return h_new, m_new
 

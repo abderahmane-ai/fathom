@@ -33,7 +33,7 @@ def base_config():
 
 @pytest.mark.parametrize(
     "mode",
-    ["standard", "recurrent_residual", "swda_lr", "block_attnres", "full_attnres"],
+    ["standard", "recurrent_residual", "vega", "block_attnres", "full_attnres"],
 )
 def test_transformer_forward_modes(base_config, mode):
     """Verify all residual modes produce correct output shapes and handle forward passes."""
@@ -41,8 +41,8 @@ def test_transformer_forward_modes(base_config, mode):
     config.residual_mode = mode
     if mode == "block_attnres":
         config.attnres_block = {"block_size": 4}
-    if mode == "swda_lr":
-        config.swda_lr = {
+    if mode == "vega":
+        config.vega = {
             "window_size": 4,
             "rank": 8,
             "n_heads": 4,

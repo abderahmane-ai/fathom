@@ -1,0 +1,13 @@
+tests/test_transformer_decoder.py:def test_shared_swda_lr_cell_params(config):
+tests/test_transformer_decoder.py:    """Verify that all layers share the same swda_lr_cell instance in SWDA-LR mode."""
+tests/test_transformer_decoder.py:    swda_lr_cell = model.swda_lr_cell
+tests/test_transformer_decoder.py:    assert swda_lr_cell is not None
+tests/test_transformer_decoder.py:        assert layer.swda_lr_cell is swda_lr_cell, "Layers are not sharing the same SWDA-LR cell instance"
+Binary file tests/__pycache__/test_transformer_layer.cpython-311-pytest-9.0.3.pyc matches
+Binary file tests/__pycache__/test_transformer_decoder.cpython-311-pytest-9.0.3.pyc matches
+tests/test_transformer_layer.py:        assert layer.swda_lr_cell is not None
+tests/test_transformer_layer.py:        m_in = layer.swda_lr_cell.get_initial_state(B, S)
+tests/test_transformer_layer.py:        cell = layer.swda_lr_cell
+tests/test_transformer_layer.py:        assert layer.swda_lr_cell is not None
+tests/test_transformer_layer.py:        m_in = layer.swda_lr_cell.get_initial_state(B, S)
+tests/test_transformer_layer.py:        assert layer.swda_lr_cell.gate_weights.grad is not None
