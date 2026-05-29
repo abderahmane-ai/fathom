@@ -21,7 +21,7 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
     return torch.cat((-x2, x1), dim=-1)
 
 def apply_rotary_pos_emb(q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):
-    # CRITICAL FIX: Cast to q.dtype to maintain BF16/FP16 mixed-precision execution paths
+    # Cast to input dtype for mixed-precision compatibility
     cos = cos.to(q.dtype).unsqueeze(0).unsqueeze(0) 
     sin = sin.to(q.dtype).unsqueeze(0).unsqueeze(0)
     
