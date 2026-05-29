@@ -135,7 +135,8 @@ class TestSWDALRCellGradients:
         assert cell.gate_weights.grad is not None
         assert cell.q_local_proj.weight.grad is not None
         assert cell.fifo_depth_bias.grad is not None
-        assert cell.kv_deep_proj.weight.grad is not None
+        assert cell.k_deep_proj.weight.grad is not None
+        assert cell.v_deep_proj.weight.grad is not None
         assert cell.q_deep_proj.weight.grad is not None
         assert cell.query_bias.grad is not None
         assert cell.decay_bias.grad is not None
