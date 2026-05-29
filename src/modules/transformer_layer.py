@@ -1,35 +1,18 @@
-"""Transformer layer orchestrator with multi-mode residual support.
-
-Supported Architectures:
-1.  **Standard / RecurrentResidual**:
-    Standard Pre-LN flow with two sublayers (Attn, FFN), each followed by
-    either a simple addition or a gated RR cell transition.
-2.  **Block-AttnRes**:
-    Implements cross-block aggregation where sublayers attend to previous
-    block states stored in a shared list.
-"""
-
 from __future__ import annotations
-
-from typing import Any
-
+from typing import Any, cast
 import torch
 import torch.nn as nn
-from beartype import beartype
 from jaxtyping import Float, jaxtyped
+from beartype import beartype
 
+# Import RMSNorm from SWDALRCell module
+from .swda_lr import RMSNorm, SWDALRCell
+from .recurrent_residual import RecurrentResidualCell
 from .attention import Attention
 from .ffn import FeedForward
-from .recurrent_residual import RecurrentResidualCell
-from .swda_lr import SWDALRCell
-
 
 class TransformerLayer(nn.Module):
-    """Universal Transformer layer supporting gated and block residuals.
-
-    Args:
-        config: Configuration exposing d_model, n_heads, ff_dim, and residual_mode.
-    """
+    """Universal Transformer layer supporting gated and block residuals."""
 
     def __init__(
         self,
@@ -39,14 +22,13 @@ class TransformerLayer(nn.Module):
     ) -> None:
         super().__init__()
 
-        # Pre-sublayer normalisation layers.
-        self.ln_1 = nn.LayerNorm(config.d_model)
-        self.ln_2 = nn.LayerNorm(config.d_model)
+        # Use RMSNorm to match modern backbones and the internal cell norms
+        self.ln_1 = RMSNorm(config.d_model)
+        self.ln_2 = RMSNorm(config.d_model)
 
         self.attn = Attention(config.d_model, config.n_heads, getattr(config, "dropout", 0.1))
         self.ffn = FeedForward(config.d_model, config.ff_dim, getattr(config, "dropout", 0.1))
 
-        # ── Mode-specific residual modules ──────────────────────────────────
         self.rr_cell: nn.Module | None = None
         self.swda_lr_cell: nn.Module | None = None
 
@@ -54,13 +36,11 @@ class TransformerLayer(nn.Module):
             if rr_cell is None:
                 rr_cfg = config.recurrent_residual
                 rr_cell = RecurrentResidualCell(
-                    config.d_model,
-                    config.num_layers,
+                    config.d_model, config.num_layers,
                     read_gate_bias=rr_cfg.read_gate_bias,
                     forget_gate_bias=getattr(rr_cfg, "forget_gate_bias", 3.0),
                     update_gate_bias=rr_cfg.update_gate_bias,
-                    eps=rr_cfg.eps,
-                    gate_init_std=rr_cfg.gate_init_std,
+                    eps=rr_cfg.eps, gate_init_std=rr_cfg.gate_init_std,
                     memory_gain_init=rr_cfg.memory_gain_init,
                 )
             self.rr_cell = rr_cell
@@ -69,64 +49,40 @@ class TransformerLayer(nn.Module):
             if swda_lr_cell is None:
                 swda_cfg = config.swda_lr
                 swda_lr_cell = SWDALRCell(
-                    config.d_model,
-                    config.num_layers,
-                    window_size=swda_cfg.window_size,
-                    rank=swda_cfg.rank,
-                    n_heads=getattr(swda_cfg, "n_heads", 4),
-                    v_dim=getattr(swda_cfg, "v_dim", None),
-                    decay_bias_init=swda_cfg.decay_bias_init,
-                    read_gate_bias=swda_cfg.read_gate_bias,
+                    config.d_model, config.num_layers,
+                    window_size=swda_cfg.window_size, rank=swda_cfg.rank,
+                    n_heads=getattr(swda_cfg, "n_heads", 4), v_dim=getattr(swda_cfg, "v_dim", None),
+                    decay_bias_init=swda_cfg.decay_bias_init, read_gate_bias=swda_cfg.read_gate_bias,
                     write_gate_bias=getattr(swda_cfg, "write_gate_bias", -2.0),
-                    eps=swda_cfg.eps,
-                    gate_init_std=swda_cfg.gate_init_std,
+                    eps=swda_cfg.eps, gate_init_std=swda_cfg.gate_init_std,
                 )
             self.swda_lr_cell = swda_lr_cell
 
         elif config.residual_mode == "block_attnres":
             from .attnres_block import BlockAttnRes
-
             block_size: int = config.attnres_block.block_size
             if block_size < 2 or block_size % 2 != 0:
                 raise ValueError("attnres_block.block_size must be an even sublayer count.")
             self.layers_per_block: int = block_size // 2
-
             self.attn_res = BlockAttnRes(config.d_model)
             self.ffn_res = BlockAttnRes(config.d_model)
 
         elif config.residual_mode == "full_attnres":
             from .attnres_block import FullAttnRes
-
             self.full_attn_res = FullAttnRes(config.d_model)
             self.full_ffn_res = FullAttnRes(config.d_model)
 
         self.residual_mode: str = config.residual_mode
 
-    # ------------------------------------------------------------------
-    # Standard / RecurrentResidual forward
-    # ------------------------------------------------------------------
-
-    @jaxtyped(typechecker=beartype)
     def forward(
         self,
-        x: Float[torch.Tensor, "batch seq d_model"],
+        x: torch.Tensor,
         layer_idx: int,
         m: Any = None,
-    ) -> tuple[
-        Float[torch.Tensor, "batch seq d_model"], Any
-    ]:
-        """Forward pass for ``standard``, ``recurrent_residual``, and ``swda_lr`` modes.
-
-        Args:
-            x: Input hidden state ``(B, S, d_model)``.
-            layer_idx: Zero-based layer index.
-            m: Current memory state.
-
-        Returns:
-            Tuple of (updated hidden state, updated memory state).
-        """
+    ) -> tuple[torch.Tensor, Any]:
+        """Forward pass for standard, recurrent_residual, and swda_lr modes."""
         if self.residual_mode in {"block_attnres", "full_attnres"}:
-            raise ValueError("Use the Attention Residual forward path for this residual mode.")
+            raise ValueError("Use the specific Attention Residual forward path for this mode.")
 
         # ── Attention sublayer ────────────────────────────────────────────
         x_norm = self.ln_1(x)
@@ -136,11 +92,11 @@ class TransformerLayer(nn.Module):
             h_mid = x + y_attn
             m_mid = None
         elif self.residual_mode == "recurrent_residual":
-            assert m is not None, "Memory state m is required for RR mode."
+            assert m is not None, "Memory state m is required"
             # pyrefly: ignore [not-callable]
             h_mid, m_mid = self.rr_cell(x, y_attn, m, layer_idx, sublayer=0, h_norm=x_norm)
         elif self.residual_mode == "swda_lr":
-            assert m is not None, "Memory state m is required for SWDA-LR mode."
+            assert m is not None, "Memory state m is required"
             # pyrefly: ignore [not-callable]
             h_mid, m_mid = self.swda_lr_cell(x, y_attn, m, layer_idx, sublayer=0, h_norm=x_norm)
 
@@ -159,6 +115,7 @@ class TransformerLayer(nn.Module):
             assert m_mid is not None
             # pyrefly: ignore [not-callable]
             h_new, m_new = self.swda_lr_cell(h_mid, y_ffn, m_mid, layer_idx, sublayer=1, h_norm=h_norm)
+            
         return h_new, m_new
 
     @jaxtyped(typechecker=beartype)
@@ -170,16 +127,6 @@ class TransformerLayer(nn.Module):
     ) -> tuple[
         list[Float[torch.Tensor, "batch seq d_model"]], Float[torch.Tensor, "batch seq d_model"]
     ]:
-        """Forward pass for sparse block-wise attention residuals.
-
-        Args:
-            blocks: Completed block states, including source embeddings.
-            partial_block: Current block residual state.
-            layer_idx: Zero-based transformer layer index.
-
-        Returns:
-            Updated block history and partial block state.
-        """
         # Pre-Attn aggregation from previous blocks.
         h_in = self.attn_res(blocks, partial_block)
         y_attn = self.attn(self.ln_1(h_in))
@@ -207,18 +154,6 @@ class TransformerLayer(nn.Module):
     ) -> tuple[
         list[Float[torch.Tensor, "batch seq d_model"]], Float[torch.Tensor, "batch seq d_model"]
     ]:
-        """Forward pass for diagnostic full Attention Residuals.
-
-        Args:
-            history: Previous hidden states in depth order.
-            x: Current hidden state.
-
-        Returns:
-            Updated history and hidden state.
-
-        Preconditions:
-            ``history`` contains at least the token embedding state.
-        """
         h_in = self.full_attn_res([*history, x])
         y_attn = self.attn(self.ln_1(h_in))
         h_mid = x + y_attn
