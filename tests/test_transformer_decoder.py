@@ -90,6 +90,7 @@ def test_recurrent_residual_memory_flow(config):
 
     # Check that each layer received m and returned a new m
     for idx, layer in enumerate(model.layers):
+        # pyrefly: ignore [missing-attribute]
         args, kwargs = layer.forward.call_args
         # args[0] is h, args[1] is layer_idx, args[2] is m
         assert args[2] is not None, f"Layer {idx} did not receive memory state m"
@@ -112,6 +113,7 @@ def test_swda_lr_memory_flow(config):
 
     # Check that each layer received m tuple (fifo, S, z) and returned a new m
     for idx, layer in enumerate(model.layers):
+        # pyrefly: ignore [missing-attribute]
         args, kwargs = layer.forward.call_args
         # args[2] is m = (fifo, S, z)
         m = args[2]
