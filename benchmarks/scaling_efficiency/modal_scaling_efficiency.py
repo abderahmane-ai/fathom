@@ -131,6 +131,18 @@ def run_recurrent_residual(run_id: str) -> None:
     retries=modal.Retries(max_retries=2, backoff_coefficient=2.0, initial_delay=30.0),
     volumes={ARTIFACT_MOUNT: artifact_volume},
 )
+def run_swda_lr(run_id: str) -> None:
+    """Run SWDA-LR scaling sweep."""
+    _run_mode("swda_lr", run_id)
+
+
+@app.function(
+    image=image,
+    gpu="A100",
+    timeout=60 * 60 * 12,
+    retries=modal.Retries(max_retries=2, backoff_coefficient=2.0, initial_delay=30.0),
+    volumes={ARTIFACT_MOUNT: artifact_volume},
+)
 def run_block_attnres(run_id: str) -> None:
     """Run Block AttnRes scaling sweep.
 
@@ -157,6 +169,7 @@ def main(wait: bool = False) -> None:
     handles = {
         "standard": run_standard.spawn(run_id),
         "recurrent_residual": run_recurrent_residual.spawn(run_id),
+        "swda_lr": run_swda_lr.spawn(run_id),
         "block_attnres": run_block_attnres.spawn(run_id),
     }
     manifest = write_spawn_manifest(BENCHMARK_NAME, handles, run_id)

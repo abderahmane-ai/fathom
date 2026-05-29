@@ -1,0 +1,20 @@
+# conf/model/swda_lr.yaml — Sliding-Window Depth Attention with Low-Rank History residual transformer
+# @package model
+
+residual_mode: swda_lr
+
+swda_lr:
+  window_size: 8
+  rank: 16
+  decay_bias_init: 3.0
+  read_gate_bias: -3.0
+  gate_init_std: 0.01
+  eps: 1e-5
+
+d_model: 768
+n_heads: 12
+ff_dim: 3072
+num_layers: 12
+max_seq_len: 1024
+vocab_size: 50257
+dropout: 0.1

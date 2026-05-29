@@ -2,6 +2,7 @@ seed: 42
 modes:
   - standard
   - recurrent_residual
+  - swda_lr
   - block_attnres
 
 model:
@@ -18,6 +19,13 @@ model:
     update_gate_bias: -2.0
     gate_init_std: 0.01
     memory_gain_init: 0.0
+    eps: 1.0e-5
+  swda_lr:
+    window_size: 8
+    rank: 16
+    decay_bias_init: 3.0
+    read_gate_bias: -3.0
+    gate_init_std: 0.01
     eps: 1.0e-5
   attnres_block:
     block_size: 2  # 8 layers → 8 blocks, 6 layers → 6 blocks, 4 layers → 4 blocks

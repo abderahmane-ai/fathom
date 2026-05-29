@@ -35,6 +35,14 @@ def config():
                 "memory_gain_init": 0.0,
                 "eps": 1e-5,
             },
+            "swda_lr": {
+                "window_size": 4,
+                "rank": 8,
+                "decay_bias_init": 3.0,
+                "read_gate_bias": -3.0,
+                "gate_init_std": 0.01,
+                "eps": 1e-5,
+            },
             "full_attnres": {"max_layers": 24},
         }
     )
@@ -45,7 +53,7 @@ def test_transformer_decoder_shapes(config):
     B, S = 2, 16
     input_ids = torch.randint(0, config.vocab_size, (B, S))
 
-    for mode in ["standard", "recurrent_residual", "block_attnres", "full_attnres"]:
+    for mode in ["standard", "recurrent_residual", "swda_lr", "block_attnres", "full_attnres"]:
         config.residual_mode = mode
         model = TransformerDecoder(config)
         logits = model(input_ids)
@@ -88,6 +96,32 @@ def test_recurrent_residual_memory_flow(config):
         assert args[2].shape == (B, S, config.d_model)
 
 
+def test_swda_lr_memory_flow(config):
+    """Verify that memory flows across layers in SWDA-LR mode."""
+    config.residual_mode = "swda_lr"
+    model = TransformerDecoder(config)
+    B, S = 1, 8
+    input_ids = torch.randint(0, config.vocab_size, (B, S))
+
+    from unittest.mock import MagicMock
+
+    for layer in model.layers:
+        layer.forward = MagicMock(side_effect=layer.forward)
+
+    _ = model(input_ids)
+
+    # Check that each layer received m tuple (fifo, S, z) and returned a new m
+    for idx, layer in enumerate(model.layers):
+        args, kwargs = layer.forward.call_args
+        # args[2] is m = (fifo, S, z)
+        m = args[2]
+        assert m is not None, f"Layer {idx} did not receive memory state m"
+        fifo, S_state, z_state = m
+        assert isinstance(fifo, list)
+        assert S_state.shape == (B, S, config.d_model, config.swda_lr.rank)
+        assert z_state.shape == (B, S, config.swda_lr.rank)
+
+
 def test_shared_rr_cell_params(config):
     """Verify that all layers share the same rr_cell instance in RR mode."""
     config.residual_mode = "recurrent_residual"
@@ -98,3 +132,15 @@ def test_shared_rr_cell_params(config):
 
     for layer in model.layers:
         assert layer.rr_cell is rr_cell, "Layers are not sharing the same RR cell instance"
+
+
+def test_shared_swda_lr_cell_params(config):
+    """Verify that all layers share the same swda_lr_cell instance in SWDA-LR mode."""
+    config.residual_mode = "swda_lr"
+    model = TransformerDecoder(config)
+
+    swda_lr_cell = model.swda_lr_cell
+    assert swda_lr_cell is not None
+
+    for layer in model.layers:
+        assert layer.swda_lr_cell is swda_lr_cell, "Layers are not sharing the same SWDA-LR cell instance"

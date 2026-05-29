@@ -21,6 +21,7 @@ from jaxtyping import Float, jaxtyped
 from .attention import Attention
 from .ffn import FeedForward
 from .recurrent_residual import RecurrentResidualCell
+from .swda_lr import SWDALRCell
 
 
 class TransformerLayer(nn.Module):
@@ -30,7 +31,12 @@ class TransformerLayer(nn.Module):
         config: Configuration exposing d_model, n_heads, ff_dim, and residual_mode.
     """
 
-    def __init__(self, config: Any, rr_cell: RecurrentResidualCell | None = None) -> None:
+    def __init__(
+        self,
+        config: Any,
+        rr_cell: RecurrentResidualCell | None = None,
+        swda_lr_cell: SWDALRCell | None = None,
+    ) -> None:
         super().__init__()
 
         # Pre-sublayer normalisation layers.
@@ -42,6 +48,7 @@ class TransformerLayer(nn.Module):
 
         # ── Mode-specific residual modules ──────────────────────────────────
         self.rr_cell: nn.Module | None = None
+        self.swda_lr_cell: nn.Module | None = None
 
         if config.residual_mode == "recurrent_residual":
             if rr_cell is None:
@@ -56,6 +63,21 @@ class TransformerLayer(nn.Module):
                     memory_gain_init=rr_cfg.memory_gain_init,
                 )
             self.rr_cell = rr_cell
+
+        elif config.residual_mode == "swda_lr":
+            if swda_lr_cell is None:
+                swda_cfg = config.swda_lr
+                swda_lr_cell = SWDALRCell(
+                    config.d_model,
+                    config.num_layers,
+                    window_size=swda_cfg.window_size,
+                    rank=swda_cfg.rank,
+                    decay_bias_init=swda_cfg.decay_bias_init,
+                    read_gate_bias=swda_cfg.read_gate_bias,
+                    eps=swda_cfg.eps,
+                    gate_init_std=swda_cfg.gate_init_std,
+                )
+            self.swda_lr_cell = swda_lr_cell
 
         elif config.residual_mode == "block_attnres":
             from .attnres_block import BlockAttnRes
@@ -85,16 +107,16 @@ class TransformerLayer(nn.Module):
         self,
         x: Float[torch.Tensor, "batch seq d_model"],
         layer_idx: int,
-        m: Float[torch.Tensor, "batch seq d_model"] | None = None,
+        m: Any = None,
     ) -> tuple[
-        Float[torch.Tensor, "batch seq d_model"], Float[torch.Tensor, "batch seq d_model"] | None
+        Float[torch.Tensor, "batch seq d_model"], Any
     ]:
-        """Forward pass for ``standard`` and ``recurrent_residual`` modes.
+        """Forward pass for ``standard``, ``recurrent_residual``, and ``swda_lr`` modes.
 
         Args:
             x: Input hidden state ``(B, S, d_model)``.
-            layer_idx: Zero-based layer index used by RR depth bias.
-            m: Current memory state for RR mode.
+            layer_idx: Zero-based layer index.
+            m: Current memory state.
 
         Returns:
             Tuple of (updated hidden state, updated memory state).
@@ -109,10 +131,14 @@ class TransformerLayer(nn.Module):
         if self.residual_mode == "standard":
             h_mid = x + y_attn
             m_mid = None
-        else:  # recurrent_residual
+        elif self.residual_mode == "recurrent_residual":
             assert m is not None, "Memory state m is required for RR mode."
             # pyrefly: ignore [not-callable]
             h_mid, m_mid = self.rr_cell(x, y_attn, m, layer_idx, sublayer=0, h_norm=x_norm)
+        elif self.residual_mode == "swda_lr":
+            assert m is not None, "Memory state m is required for SWDA-LR mode."
+            # pyrefly: ignore [not-callable]
+            h_mid, m_mid = self.swda_lr_cell(x, y_attn, m, layer_idx, sublayer=0, h_norm=x_norm)
 
         # ── FFN sublayer ──────────────────────────────────────────────────
         h_norm = self.ln_2(h_mid)
@@ -121,11 +147,14 @@ class TransformerLayer(nn.Module):
         if self.residual_mode == "standard":
             h_new = h_mid + y_ffn
             m_new = None
-        else:
+        elif self.residual_mode == "recurrent_residual":
             assert m_mid is not None
             # pyrefly: ignore [not-callable]
             h_new, m_new = self.rr_cell(h_mid, y_ffn, m_mid, layer_idx, sublayer=1, h_norm=h_norm)
-
+        elif self.residual_mode == "swda_lr":
+            assert m_mid is not None
+            # pyrefly: ignore [not-callable]
+            h_new, m_new = self.swda_lr_cell(h_mid, y_ffn, m_mid, layer_idx, sublayer=1, h_norm=h_norm)
         return h_new, m_new
 
     @jaxtyped(typechecker=beartype)

@@ -17,6 +17,7 @@ from beartype import beartype
 from jaxtyping import Float, Int, jaxtyped
 
 from .recurrent_residual import RecurrentResidualCell
+from .swda_lr import SWDALRCell
 from .transformer_layer import TransformerLayer
 
 
@@ -33,7 +34,7 @@ class TransformerDecoder(nn.Module):
             - ``vocab_size``   (int):  Vocabulary size.
             - ``dropout``      (float): Embedding / output dropout.
             - ``residual_mode`` (str): ``"standard"`` | ``"recurrent_residual"``
-              | ``"block_attnres"`` | ``"full_attnres"``.
+              | ``"swda_lr"`` | ``"block_attnres"`` | ``"full_attnres"``.
             - ``attnres_block.block_size`` (int): Required for block_attnres mode.
             - ``recurrent_residual``: Required RR gate initialization config.
     """
@@ -50,13 +51,15 @@ class TransformerDecoder(nn.Module):
         if self.residual_mode not in {
             "standard",
             "recurrent_residual",
+            "swda_lr",
             "block_attnres",
             "full_attnres",
         }:
             raise ValueError(f"Unsupported residual_mode: {self.residual_mode}")
 
         # ── Global Recurrent Cell (Shared across layers) ──────────────────
-        self.rr_cell: RecurrentResidualCell | None
+        self.rr_cell: RecurrentResidualCell | None = None
+        self.swda_lr_cell: SWDALRCell | None = None
         if self.residual_mode == "recurrent_residual":
             rr_cfg = config.recurrent_residual
             self.rr_cell = RecurrentResidualCell(
@@ -68,8 +71,18 @@ class TransformerDecoder(nn.Module):
                 gate_init_std=rr_cfg.gate_init_std,
                 memory_gain_init=rr_cfg.memory_gain_init,
             )
-        else:
-            self.rr_cell = None
+        elif self.residual_mode == "swda_lr":
+            swda_cfg = config.swda_lr
+            self.swda_lr_cell = SWDALRCell(
+                config.d_model,
+                config.num_layers,
+                window_size=swda_cfg.window_size,
+                rank=swda_cfg.rank,
+                decay_bias_init=swda_cfg.decay_bias_init,
+                read_gate_bias=swda_cfg.read_gate_bias,
+                eps=swda_cfg.eps,
+                gate_init_std=swda_cfg.gate_init_std,
+            )
 
         if self.residual_mode == "full_attnres":
             max_full_layers = int(config.full_attnres.max_layers)
@@ -80,7 +93,10 @@ class TransformerDecoder(nn.Module):
                 )
 
         self.layers: nn.ModuleList = nn.ModuleList(
-            [TransformerLayer(config, rr_cell=self.rr_cell) for _ in range(config.num_layers)]
+            [
+                TransformerLayer(config, rr_cell=self.rr_cell, swda_lr_cell=self.swda_lr_cell)
+                for _ in range(config.num_layers)
+            ]
         )
 
         self.ln_f = nn.LayerNorm(config.d_model)
@@ -154,7 +170,17 @@ class TransformerDecoder(nn.Module):
         # ── Layer stack ───────────────────────────────────────────────────
         if self.residual_mode == "recurrent_residual":
             # Global memory flows across all layers.
+            assert self.rr_cell is not None
+            # pyrefly: ignore [missing-attribute]
             m = self.rr_cell.get_initial_state(B, S, device=device)
+            for idx, layer in enumerate(self.layers):
+                layer_typed = cast(TransformerLayer, layer)
+                h, m = layer_typed(h, idx, m)
+
+        elif self.residual_mode == "swda_lr":
+            assert self.swda_lr_cell is not None
+            # pyrefly: ignore [missing-attribute]
+            m = self.swda_lr_cell.get_initial_state(B, S, device=device)
             for idx, layer in enumerate(self.layers):
                 layer_typed = cast(TransformerLayer, layer)
                 h, m = layer_typed(h, idx, m)
