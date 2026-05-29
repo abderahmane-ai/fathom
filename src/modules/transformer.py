@@ -78,8 +78,11 @@ class TransformerDecoder(nn.Module):
                 config.num_layers,
                 window_size=swda_cfg.window_size,
                 rank=swda_cfg.rank,
+                n_heads=getattr(swda_cfg, "n_heads", 4),
+                v_dim=getattr(swda_cfg, "v_dim", None),
                 decay_bias_init=swda_cfg.decay_bias_init,
                 read_gate_bias=swda_cfg.read_gate_bias,
+                write_gate_bias=getattr(swda_cfg, "write_gate_bias", -2.0),
                 eps=swda_cfg.eps,
                 gate_init_std=swda_cfg.gate_init_std,
             )

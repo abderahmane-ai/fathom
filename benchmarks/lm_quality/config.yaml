@@ -23,6 +23,7 @@ model:
   swda_lr:
     window_size: 8
     rank: 16
+    n_heads: 4
     decay_bias_init: 3.0
     read_gate_bias: -3.0
     gate_init_std: 0.01

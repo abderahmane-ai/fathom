@@ -5,10 +5,11 @@ This repository implements and compares two novel transformer residual mechanism
 ## Overview
 
 Standard Transformer residual connections ($h = h + y$) can dilute early-layer
-signals as depth increases. This project compares two residual mechanisms:
+signals as depth increases. This project compares three residual mechanisms:
 
 1.  **Recurrent Residuals (RR)**: Treats the depth dimension as a recurrent process. A persistent "working memory" state $m$ flows across layers, updated by gated read/write mechanisms.
 2.  **Attention Residuals (AttnRes)**: Based on the Moonshot AI paper (arXiv:2603.15031). Uses softmax attention over previous "blocks" of layers to selectively aggregate information.
+3.  **SWDA-LR**: Sliding-Window Depth Attention with Low-Rank History. Combines an exact local FIFO sliding window with a multi-head low-rank running covariance for deep history retrieval. $O(L)$ complexity with logarithmic timescale decay initialization.
 
 RR is implemented as a standard Pre-LN residual addition plus a diagonal gated
 memory path. Block AttnRes is implemented as the practical Attention Residuals
@@ -36,6 +37,9 @@ python src/train.py model=standard
 # Train with Recurrent Residuals (Shared Memory)
 python src/train.py model=recurrent_residual
 
+# Train with Sliding-Window Depth Attention with Low-Rank History
+python src/train.py model=swda_lr
+
 # Train with Block Attention Residuals
 python src/train.py model=attnres
 ```
@@ -56,7 +60,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/
 
 ## Methodology
 
-For a deep dive into the mathematics of Recurrent Residuals, see [METHODOLOGY.md](METHODOLOGY.md).
+For a deep dive into the mathematics of each residual mechanism, see [METHODOLOGY.md](METHODOLOGY.md).
 
 ### Key Equations (RR)
 - **Read**: $h_l = h_{l-1} + y_l + r_l \odot (g_m \odot \text{RMSNorm}(m_{l-1}))$

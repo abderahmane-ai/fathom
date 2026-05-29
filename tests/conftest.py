@@ -114,3 +114,33 @@ def rr_cfg(d_model, n_heads, ff_dim, num_layers):
             },
         }
     )
+
+
+@pytest.fixture
+def swda_lr_cfg(d_model, n_heads, ff_dim, num_layers):
+    """Minimal OmegaConf config for swda_lr mode.
+
+    Uses rank=8 (divisible by n_heads=4) and v_dim defaults to d_model.
+    """
+    return OmegaConf.create(
+        {
+            "d_model": d_model,
+            "n_heads": n_heads,
+            "ff_dim": ff_dim,
+            "num_layers": num_layers,
+            "max_seq_len": 32,
+            "vocab_size": 256,
+            "dropout": 0.0,
+            "residual_mode": "swda_lr",
+            "swda_lr": {
+                "window_size": 4,
+                "rank": 8,
+                "n_heads": 4,
+                "decay_bias_init": 3.0,
+                "read_gate_bias": -3.0,
+                "write_gate_bias": -2.0,
+                "gate_init_std": 0.01,
+                "eps": 1e-5,
+            },
+        }
+    )

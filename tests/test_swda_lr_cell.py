@@ -33,11 +33,27 @@ class TestSWDALRCellInit:
         fifo_buf, fifo_idx, S_init, z_init = cell.get_initial_state(B, S)
         assert fifo_buf.shape == (cell.window_size, B, S, d_model)
         assert fifo_idx == 0
-        assert S_init.shape == (B, S, cell.rank, cell.v_dim)
-        assert z_init.shape == (B, S, cell.rank)
+        assert S_init.shape == (B, S, cell.n_heads, cell.r_head, cell.d_head)
+        assert z_init.shape == (B, S, cell.n_heads, cell.r_head)
         assert fifo_buf.abs().max() == 0.0
         assert S_init.abs().max() == 0.0
         assert z_init.abs().max() == 0.0
+
+    def test_timescale_initialization(self, cell):
+        """Verify that state decay parameters are initialized with logarithmic spacing."""
+        assert cell.decay_bias.shape == (cell.num_sublayers, cell.rank)
+        assert cell.key_decay_bias.shape == (cell.num_sublayers, cell.rank)
+        
+        # Verify sigmoid values mapped from initialized logit bias are in bounds
+        sig_decay = torch.sigmoid(cell.decay_bias)
+        assert (sig_decay >= 0.001).all()
+        assert (sig_decay <= 0.999).all()
+        
+        # Values should be strictly sorted within each sublayer due to linspace initialization
+        for i in range(cell.num_sublayers):
+            vals = sig_decay[i]
+            diffs = vals[1:] - vals[:-1]
+            assert (diffs >= 0.0).all()
 
 
 class TestSWDALRCellForward:
@@ -99,8 +115,8 @@ class TestSWDALRCellGradients:
         # Mock non-zero historical states
         fifo_buf = torch.randn(cell.window_size, B, S, d_model)
         fifo_idx = torch.tensor(1, dtype=torch.long)
-        S_prev = torch.randn(B, S, cell.rank, cell.v_dim)
-        z_prev = torch.randn(B, S, cell.rank).abs() + 1.0  # avoid division by zero
+        S_prev = torch.randn(B, S, cell.n_heads, cell.r_head, cell.d_head)
+        z_prev = torch.randn(B, S, cell.n_heads, cell.r_head).abs() + 1.0  # avoid division by zero
         m = (fifo_buf, fifo_idx, S_prev, z_prev)
 
         h_prev = torch.randn(B, S, d_model)
@@ -116,5 +132,6 @@ class TestSWDALRCellGradients:
         assert cell.k_deep_proj.weight.grad is not None
         assert cell.q_deep_proj.weight.grad is not None
         assert cell.v_deep_proj.weight.grad is not None
+        assert cell.query_bias.grad is not None
         assert cell.decay_bias.grad is not None
         assert cell.key_decay_bias.grad is not None

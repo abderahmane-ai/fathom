@@ -8,6 +8,7 @@ depth-wise information persistence, not a replacement for language-model loss.
 ## Modes
 - `standard`: baseline Pre-LN residual transformer.
 - `recurrent_residual`: RR depth memory mechanism.
+- `swda_lr`: Sliding-Window Depth Attention with Low-Rank History.
 - `block_attnres`: practical Attention Residuals comparison target.
 - `full_attnres`: tiny correctness reference that stores every previous state.
 

@@ -1,8 +1,8 @@
-# Methodology: Recurrent Residual Mechanisms for Deep Transformers
+# Methodology: Residual Stream Dynamics in Deep Transformers
 
 ## 1. Introduction
 
-The standard Transformer architecture relies on additive residual connections to facilitate gradient flow and enable training of deep networks. However, as models scale to extreme depths, these connections suffer from "information dilution," where the signals from early layers are progressively obscured by the cumulative noise of subsequent transformations. This document outlines the methodology behind **Recurrent Residuals (RR)**—a novel, gated memory mechanism designed to preserve information persistence across the depth dimension with constant $O(1)$ complexity, operating on a standard Pre‑LN backbone without additional stabilisation tricks.
+The standard Transformer architecture relies on additive residual connections to facilitate gradient flow and enable training of deep networks. However, as models scale to extreme depths, these connections suffer from "information dilution," where the signals from early layers are progressively obscured by the cumulative noise of subsequent transformations. This document is a comparative study of **residual stream mechanisms** for the depth dimension—examining how different architectural choices (simple addition, attention over depth, recurrent gating, and hybrid sliding-window covariance) affect information persistence, gradient flow, and language-model quality on a common Pre‑LN backbone.
 
 ---
 
@@ -30,7 +30,7 @@ While this allows "Random Access" to any previous layer, it introduces a memory 
 
 ---
 
-## 3. The Solution: Recurrent Residuals (RR)
+## 3. Recurrent Residuals (RR): Gated Working Memory
 
 Recurrent Residuals replace the "Random Access" of attention with a **"Working Memory"** approach. Instead of looking back at every layer, the model maintains a persistent per‑token memory state $\mathbf{m}$ that is recurrently updated as information flows deeper into the network.
 
@@ -140,18 +140,44 @@ Here $S$ is the number of residual transitions. For a decoder layer with attenti
 
 ---
 
+## 6.5 SWDA-LR: Sliding-Window Depth Attention with Low-Rank History
+
+SWDA-LR combines two complementary memory mechanisms:
+
+**Local Path (FIFO Sliding Window):** Maintains the last $W$ sublayer outputs in a circular buffer. Queries the buffer using softmax attention with a learned relative depth bias, providing exact, uncompressed access to the $W$ most-recent depth steps at $O(Wd)$ cost.
+
+**Deep Path (Multi-Head Low-Rank Covariance):** Maintains a running outer-product covariance matrix $\mathbf{S} \in \mathbb{R}^{H \times r_h \times d_h}$ and key normalizer $\mathbf{z}$, updated as an exponential moving average:
+
+$$
+\mathbf{S}_l = \boldsymbol{\alpha}_l \odot \mathbf{S}_{l-1} + \boldsymbol{\phi}(\mathbf{k}_l)^{\!\top} \mathbf{v}_l
+$$
+
+$$
+c_{\text{deep}} = \frac{\boldsymbol{\phi}(\mathbf{q}_l)^\top \mathbf{S}_{l-1}}{\boldsymbol{\phi}(\mathbf{q}_l)^\top \mathbf{z}_{l-1} + \varepsilon}
+$$
+
+where $\boldsymbol{\phi}(x) = \text{ELU}(x) + 1$ is the positivity feature map ensuring unconditional stability of the linear attention denominator, and $\boldsymbol{\alpha}_l$ are per-head, per-rank SSM-style decay gates initialized with **logarithmic timescale spacing** (from 1-step to $2L$-step memory half-lives).
+
+**Key initialisation choices:**
+- Decay gates initialized log-linearly so each head specializes in a different depth horizon.
+- Learned Depth Pseudo-Queries (`query_bias`) initialized to zero (Zero-Start compliant).
+- Projection matrices $\mathbf{W}_K, \mathbf{W}_Q, \mathbf{W}_V$ initialized orthogonally.
+- Memory gain $\mathbf{g}_m = \mathbf{1}$, controlled by a closed read gate at init, so the model starts as a standard Pre-LN Transformer.
+
+---
+
 ## 7. Comparison of Approaches
 
-| Feature | Standard Residuals | Attention Residuals | Recurrent Residuals |
-| :--- | :--- | :--- | :--- |
-| **Logic** | Simple Addition | Depth‑wise Softmax | Gated Recurrency (EMA) |
-| **Information Flow** | Passive Accumulation | Selective Retrieval | Selective Persistence |
-| **Complexity (per layer)** | $O(d)$ | $O(Ld)$ (full) / $O(Bd)$ (block) | $O(d)$ |
-| **Memory Cost (per token)** | $O(d)$ | $O(Ld)$ (full) / $O(Bd)$ (block) | $O(2d)$ |
-| **Softmax over Depth** | No | Yes | No |
-| **Hyperparameters Added** | 0 | Block size, sink tokens, rescaling | 0 |
-| **Stability** | Norm grows with depth | Attention‑sink outliers | Provably bounded norms |
-| **Initialisation Sensitivity** | Low | Medium (pseudo‑query zero‑init) | None (starts as standard Transformer) |
+| Feature | Standard Residuals | Attention Residuals | Recurrent Residuals | SWDA-LR |
+| :--- | :--- | :--- | :--- | :--- |
+| **Logic** | Simple Addition | Depth‑wise Softmax | Gated Recurrency (EMA) | FIFO Window + Low-Rank Linear Attn |
+| **Information Flow** | Passive Accumulation | Selective Retrieval | Selective Persistence | Local Exact + Deep Covariance |
+| **Complexity (per layer)** | $O(d)$ | $O(Ld)$ (full) / $O(Bd)$ (block) | $O(d)$ | $O(Wd + rd)$ |
+| **Memory Cost (per token)** | $O(d)$ | $O(Ld)$ (full) / $O(Bd)$ (block) | $O(2d)$ | $O(Wd + nrd_v)$ |
+| **Softmax over Depth** | No | Yes | No | No (local only) |
+| **Hyperparameters Added** | 0 | Block size, sink tokens, rescaling | 0 | Window size $W$, rank $r$, heads $H$ |
+| **Stability** | Norm grows with depth | Attention‑sink outliers | Provably bounded norms | Linear-attn positivity constraint |
+| **Initialisation Sensitivity** | Low | Medium (pseudo‑query zero‑init) | None (starts as standard Transformer) | None (Zero-Start compliant) |
 
 ---
 
@@ -226,4 +252,4 @@ Neither metric is sufficient on its own. We evaluate architectures using the tri
 
 ## 9. Conclusion
 
-Recurrent Residuals provide a scalable, $O(d)$ solution to the information dilution problem in deep Transformers. By integrating gated working memory with a principled initialisation protocol, the architecture enables the persistence of early‑layer signals through hundreds of layers without the quadratic memory costs and stability risks associated with full attention‑over‑depth mechanisms. The design introduces no new hyperparameters, requires no special normalisation schemes beyond standard Pre‑LN, and can be dropped into any Transformer as a direct replacement for the vanilla residual connection.
+Each residual mechanism studied here makes a distinct trade-off between expressivity, memory cost, and stability. Standard residuals are a free baseline. Attention Residuals offer selective random-access depth retrieval at $O(Ld)$ cost. Recurrent Residuals provide $O(d)$ persistent working memory with provably bounded norms. SWDA-LR combines both local exactness and long-range covariance retrieval at $O(Wd + rd)$ cost, bridging the gap between the two extremes. The shared evaluation framework—DRI, GPI, and perplexity—provides a principled lens for comparing these designs on both information-preservation and downstream language-model quality.

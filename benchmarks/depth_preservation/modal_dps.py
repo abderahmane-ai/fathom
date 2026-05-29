@@ -194,6 +194,14 @@ def run_recurrent_residual(run_id: str) -> None:
     volumes={ARTIFACT_MOUNT: artifact_volume},
 )
 def run_swda_lr(run_id: str) -> None:
+    """Run the SWDA-LR depth preservation benchmark.
+
+    Args:
+        run_id: Shared run id.
+
+    Returns:
+        None.
+    """
     _run_mode("swda_lr", run_id)
 
 

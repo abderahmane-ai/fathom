@@ -121,8 +121,11 @@ def test_swda_lr_memory_flow(config):
         fifo_buf, fifo_idx, S_state, z_state = m
         assert isinstance(fifo_buf, torch.Tensor)
         assert fifo_buf.shape == (config.swda_lr.window_size, B, S, config.d_model)
-        assert S_state.shape == (B, S, config.swda_lr.rank, config.d_model)
-        assert z_state.shape == (B, S, config.swda_lr.rank)
+        n_heads = config.swda_lr.get("n_heads", 4)
+        r_head = config.swda_lr.rank // n_heads
+        d_head = config.d_model // n_heads
+        assert S_state.shape == (B, S, n_heads, r_head, d_head)
+        assert z_state.shape == (B, S, n_heads, r_head)
 
 
 def test_shared_rr_cell_params(config):
