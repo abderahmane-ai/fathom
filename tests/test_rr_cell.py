@@ -20,16 +20,14 @@ class TestRRCellInit:
         h_prev = torch.randn(B, S, d_model)
         y = torch.randn(B, S, d_model)
 
-        # RRv2: Dampening gate starts open (transparency), read gate starts closed.
         h_new, _ = cell(h_prev, y, m, layer_idx=0, sublayer=0)
 
         # Higher tolerance due to complex gating and projection logic
         assert_close(h_new, h_prev + y, atol=0.2, rtol=0.2)
 
     def test_parameter_count(self, cell, d_model):
-        # Update formula based on new architecture
         expected_params = (cell.num_sublayers * 4 + 10) * d_model
-        assert sum(p.numel() for p in cell.parameters()) >= d_model # Approximate check
+        assert sum(p.numel() for p in cell.parameters()) >= d_model 
 
 class TestRRCellMemoryUpdate:
     def test_memory_update_equation(self, cell, B, S, d_model):
@@ -37,10 +35,7 @@ class TestRRCellMemoryUpdate:
         h_prev = torch.randn(B, S, d_model)
         y = torch.randn(B, S, d_model)
         
-        # Verify based on new gated structure
-        # (Loosely coupled)
         _, m_after = cell(h_prev, y, m_before, layer_idx=0, sublayer=0)
-        
         assert m_after.shape == (B, S, d_model)
 
 class TestRRCellGradients:

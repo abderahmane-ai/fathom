@@ -12,6 +12,11 @@ class TransformerDecoder(nn.Module):
 
     def __init__(self, config: Any) -> None:
         super().__init__()
+        self.residual_mode: str = config.residual_mode
+
+        self.token_embeddings = nn.Embedding(config.vocab_size, config.d_model)
+        self.emb_drop = nn.Dropout(getattr(config, "dropout", 0.1))
+        
         # ── Global Shared Cells (Weight-Tied Depth Routing) ───────────────
         self.rr_cell: RecurrentResidualCell | None = None
         self.vega_cell: VEGACell | None = None

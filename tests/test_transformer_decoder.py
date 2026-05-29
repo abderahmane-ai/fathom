@@ -30,16 +30,20 @@ def config():
             "attnres_block": {"block_size": 4},
             "recurrent_residual": {
                 "read_gate_bias": -3.0,
+                "forget_gate_bias": 3.0,
                 "update_gate_bias": -2.0,
+                "damp_gate_bias": 3.0,
+                "eps": 1e-5,
                 "gate_init_std": 0.01,
                 "memory_gain_init": 0.0,
-                "eps": 1e-5,
             },
             "vega": {
-                "window_size": 4,
                 "rank": 8,
-                "decay_bias_init": 3.0,
+                "n_heads": 2,
+                "n_fast_heads": 1,
                 "read_gate_bias": -3.0,
+                "write_gate_bias": -2.0,
+                "damp_gate_bias": 3.0,
                 "gate_init_std": 0.01,
                 "eps": 1e-5,
             },
@@ -68,22 +72,15 @@ def test_weight_tying(config):
 
 
 def test_recurrent_residual_memory_flow(config):
-    """Verify that memory flows across layers in RR mode.
-
-    We can check this by verifying that the TransformerDecoder forward
-    pass actually passes the m state through.
-    """
+    """Verify that memory flows across layers in RR mode."""
     config.residual_mode = "recurrent_residual"
     model = TransformerDecoder(config)
     B, S = 1, 8
     input_ids = torch.randint(0, config.vocab_size, (B, S))
 
-    # We'll patch the TransformerLayer forward to check for m
     from unittest.mock import MagicMock
 
-    original_layer_forwards = []
     for layer in model.layers:
-        original_layer_forwards.append(layer.forward)
         layer.forward = MagicMock(side_effect=layer.forward)
 
     _ = model(input_ids)
@@ -92,7 +89,7 @@ def test_recurrent_residual_memory_flow(config):
     for idx, layer in enumerate(model.layers):
         # pyrefly: ignore [missing-attribute]
         args, kwargs = layer.forward.call_args
-        # args[0] is h, args[1] is layer_idx, args[2] is m
+        # args[2] is m
         assert args[2] is not None, f"Layer {idx} did not receive memory state m"
         assert args[2].shape == (B, S, config.d_model)
 
@@ -111,20 +108,17 @@ def test_vega_memory_flow(config):
 
     _ = model(input_ids)
 
-    # Check that each layer received m tuple (fifo, S, z) and returned a new m
+    # Check that each layer received m tuple (S, z) and returned a new m
     for idx, layer in enumerate(model.layers):
         # pyrefly: ignore [missing-attribute]
         args, kwargs = layer.forward.call_args
-        # args[2] is m = (fifo, S, z)
         m = args[2]
         assert m is not None, f"Layer {idx} did not receive memory state m"
-        fifo_buf, fifo_norm_buf, fifo_idx, S_state, z_state = m
-        assert isinstance(fifo_buf, torch.Tensor)
-        assert fifo_buf.shape == (B, S, config.vega.window_size, config.d_model)
+        S_state, z_state = m
         n_heads = config.vega.get("n_heads", 4)
         r_head = config.vega.rank // n_heads
-        d_head = config.d_model // n_heads
-        assert S_state.shape == (B, S, n_heads, r_head, d_head)
+        d_head = r_head # assuming d_head = r_head
+        assert S_state.shape == (B, S, n_heads, r_head, r_head)
         assert z_state.shape == (B, S, n_heads, r_head)
 
 
