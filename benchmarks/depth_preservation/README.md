@@ -6,7 +6,7 @@ Measures the preservation of activation identity and alignment across layers for
 ## Modes
 - `standard`: baseline Pre-LN residual transformer.
 - `recurrent_residual`: RR depth memory mechanism.
-- `swda_lr`: Sliding-Window Depth Attention with Low-Rank History.
+- `vega`: Sliding-Window Depth Attention with Low-Rank History.
 - `block_attnres`: Block Attention Residuals.
 
 ## Metrics

@@ -35,7 +35,7 @@ def config():
                 "memory_gain_init": 0.0,
                 "eps": 1e-5,
             },
-            "swda_lr": {
+            "vega": {
                 "window_size": 4,
                 "rank": 8,
                 "decay_bias_init": 3.0,
@@ -98,7 +98,7 @@ def test_recurrent_residual_memory_flow(config):
 
 
 def test_vega_memory_flow(config):
-    """Verify that memory flows across layers in SWDA-LR mode."""
+    """Verify that memory flows across layers in VEGA mode."""
     config.residual_mode = "vega"
     model = TransformerDecoder(config)
     B, S = 1, 8
@@ -141,7 +141,7 @@ def test_shared_rr_cell_params(config):
 
 
 def test_shared_vega_cell_params(config):
-    """Verify that all layers share the same vega_cell instance in SWDA-LR mode."""
+    """Verify that all layers share the same vega_cell instance in VEGA mode."""
     config.residual_mode = "vega"
     model = TransformerDecoder(config)
 
@@ -149,4 +149,4 @@ def test_shared_vega_cell_params(config):
     assert vega_cell is not None
 
     for layer in model.layers:
-        assert layer.vega_cell is vega_cell, "Layers are not sharing the same SWDA-LR cell instance"
+        assert layer.vega_cell is vega_cell, "Layers are not sharing the same VEGA cell instance"

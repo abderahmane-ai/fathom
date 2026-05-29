@@ -3,7 +3,7 @@ from typing import Any, cast
 import torch
 import torch.nn as nn
 
-# Import RMSNorm from SWDALRCell module
+# Import RMSNorm from VEGACell module
 from .vega import RMSNorm, VEGACell
 from .recurrent_residual import RecurrentResidualCell
 from .attention import Attention
@@ -80,7 +80,7 @@ class TransformerLayer(nn.Module):
         layer_idx: int,
         m: Any = None,
     ) -> tuple[torch.Tensor, Any]:
-        """Forward pass for standard, recurrent_residual, and swda_lr modes."""
+        """Forward pass for standard, recurrent_residual, and vega modes."""
         if self.residual_mode in {"block_attnres", "full_attnres"}:
             raise ValueError("Use the specific Attention Residual forward path for this mode.")
 

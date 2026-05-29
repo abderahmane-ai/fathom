@@ -146,8 +146,8 @@ class TestTransformerLayerRR:
         assert layer.rr_cell.update_weight.grad is not None
 
 
-class TestTransformerLayerSWDALR:
-    """SWDA-LR residual mode."""
+class TestTransformerLayerVEGA:
+    """VEGA residual mode."""
 
     def test_forward_requires_m(self, vega_cfg, B, S, d_model):
         """forward() must raise AssertionError if m is not provided."""
@@ -157,7 +157,7 @@ class TestTransformerLayerSWDALR:
             layer(x, layer_idx=0)
 
     def test_forward_with_memory_flow(self, vega_cfg, B, S, d_model):
-        """Verify layer passes and updates the SWDA-LR memory tuple."""
+        """Verify layer passes and updates the VEGA memory tuple."""
         layer = TransformerLayer(vega_cfg)
         assert layer.vega_cell is not None
         # pyrefly: ignore [not-callable]

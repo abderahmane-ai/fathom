@@ -8,7 +8,7 @@ Block AttnRes cache overhead.
 ## Modes
 - `standard`: baseline Pre-LN residual transformer.
 - `recurrent_residual`: RR depth memory mechanism.
-- `swda_lr`: Sliding-Window Depth Attention with Low-Rank History.
+- `vega`: Sliding-Window Depth Attention with Low-Rank History.
 - `block_attnres`: paper-aligned Block Attention Residuals.
 
 ## Metrics

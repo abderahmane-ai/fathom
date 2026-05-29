@@ -147,13 +147,13 @@ Here $S$ is the number of residual transitions. For a decoder layer with attenti
 
 ---
 
-## 6.5 VEGA: Sliding-Window Depth Attention with Low-Rank History
+## 6.5 VEGA: Vertical EMA Gated Attention
 
-VEGA combines two complementary memory mechanisms:
+VEGA combines multi-scale depth memory to capture context at different timescales:
 
-**Local Path (FIFO Sliding Window):** Maintains the last $W$ sublayer outputs in a circular buffer. Queries the buffer using softmax attention with a learned relative depth bias, providing exact, uncompressed access to the $W$ most-recent depth steps at $O(Wd)$ cost.
+**Multi-Scale Depth Memory:** Instead of a FIFO window, VEGA partitions heads into "fast" and "slow" decay groups within a single linear-attention EMA state. This allows the model to dynamically learn to retain information at different timescales (local vs. global depth context) without the memory overhead of a FIFO buffer.
 
-**Deep Path (Multi-Head Low-Rank Covariance):** Maintains a running outer-product covariance matrix $\mathbf{S} \in \mathbb{R}^{H \times r_h \times d_h}$ and key normalizer $\mathbf{z}$, updated as an exponential moving average:
+**EMA State Update:** The state $\mathbf{S} \in \mathbb{R}^{H \times r \times r}$ is updated as an exponential moving average:
 
 $$
 \mathbf{S}_l = \boldsymbol{\alpha}_l \odot \mathbf{S}_{l-1} + \boldsymbol{\phi}(\mathbf{k}_l)^{\!\top} \mathbf{v}_l
@@ -163,7 +163,7 @@ $$
 c_{\text{deep}} = \frac{\boldsymbol{\phi}(\mathbf{q}_l)^\top \mathbf{S}_{l-1}}{\boldsymbol{\phi}(\mathbf{q}_l)^\top \mathbf{z}_{l-1} + \varepsilon}
 $$
 
-where $\boldsymbol{\phi}(x) = \text{ELU}(x) + 1$ is the positivity feature map ensuring unconditional stability of the linear attention denominator, and $\boldsymbol{\alpha}_l$ are per-head, per-rank SSM-style decay gates initialized with **logarithmic timescale spacing** (from 1-step to $2L$-step memory half-lives).
+where $\boldsymbol{\phi}(x) = \text{ELU}(x) + 1$ ensures unconditional stability, and $\boldsymbol{\alpha}_l$ are per-head, per-rank decay gates initialized with logarithmic timescale spacing (from 1-step to $2L$-step memory half-lives).
 
 **Key initialisation choices:**
 - Decay gates initialized log-linearly so each head specializes in a different depth horizon.
