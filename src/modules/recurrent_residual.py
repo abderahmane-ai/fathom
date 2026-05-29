@@ -103,8 +103,9 @@ class RecurrentResidualCell(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         position = self._sublayer_position(layer_idx, sublayer)
 
-        # Use RMSNorm instead of LayerNorm to match modern backbones
-        h_norm = self.h_norm(h_prev)
+        if h_norm is None:
+            # Use RMSNorm instead of LayerNorm to match modern backbones
+            h_norm = self.h_norm(h_prev)
         
         # 1. Read Path
         read_gate = torch.sigmoid(self.read_weight * h_norm + self.read_bias)
