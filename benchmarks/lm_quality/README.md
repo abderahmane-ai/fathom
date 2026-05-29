@@ -13,7 +13,7 @@ used by editing `config.yaml` data fields.
 
 ## Metrics
 The run logs train loss, validation loss, perplexity, tokens per second, wall time,
-peak CUDA memory, parameter count, and RR gate statistics when available.
+peak CUDA memory, parameter count, and residual gate statistics when available.
 
 ## Run
 ```bash

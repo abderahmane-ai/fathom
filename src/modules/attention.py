@@ -1,7 +1,8 @@
-"""Multi-head self-attention with optimized Flash Attention kernels.
+"""Causal multi-head self-attention.
 
-Utilizes ``torch.nn.functional.scaled_dot_product_attention`` for efficient
-memory utilization (O(S) instead of O(S²)) and native causal masking.
+Uses ``torch.nn.functional.scaled_dot_product_attention`` which dispatches to
+memory-efficient kernels (including Flash Attention when available on the target
+hardware) and handles causal masking natively.
 """
 
 from __future__ import annotations

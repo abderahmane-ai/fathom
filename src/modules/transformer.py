@@ -3,6 +3,7 @@
 Supported Modes:
 *   ``standard``: Classic Pre-LN Transformer.
 *   ``recurrent_residual``: Global gated-memory state ('m') shared across depth.
+*   ``swda_lr``: Sliding-window FIFO plus multi-head low-rank running covariance.
 *   ``block_attnres``: Block-wise attention residuals for sparse cross-depth retrieval.
 *   ``full_attnres``: Small diagnostic full-depth attention residuals.
 """
@@ -33,10 +34,11 @@ class TransformerDecoder(nn.Module):
             - ``max_seq_len``  (int):  Maximum sequence length.
             - ``vocab_size``   (int):  Vocabulary size.
             - ``dropout``      (float): Embedding / output dropout.
-            - ``residual_mode`` (str): ``"standard"`` | ``"recurrent_residual"``
-              | ``"swda_lr"`` | ``"block_attnres"`` | ``"full_attnres"``.
+            - ``residual_mode`` (str): One of ``"standard"``, ``"recurrent_residual"``,
+              ``"swda_lr"``, ``"block_attnres"``, or ``"full_attnres"``.
             - ``attnres_block.block_size`` (int): Required for block_attnres mode.
-            - ``recurrent_residual``: Required RR gate initialization config.
+            - ``recurrent_residual``: Required RR gate initialisation config.
+            - ``swda_lr``: Required SWDA-LR cell config.
     """
 
     def __init__(self, config: Any) -> None:

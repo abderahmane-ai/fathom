@@ -174,6 +174,11 @@ def _run_mode(residual_mode: str, run_id: str) -> None:
     volumes={ARTIFACT_MOUNT: artifact_volume},
 )
 def run_standard(run_id: str) -> None:
+    """Run the standard residual depth preservation benchmark.
+
+    Args:
+        run_id: Shared run id.
+    """
     _run_mode("standard", run_id)
 
 
@@ -184,6 +189,11 @@ def run_standard(run_id: str) -> None:
     volumes={ARTIFACT_MOUNT: artifact_volume},
 )
 def run_recurrent_residual(run_id: str) -> None:
+    """Run the Recurrent Residual depth preservation benchmark.
+
+    Args:
+        run_id: Shared run id.
+    """
     _run_mode("recurrent_residual", run_id)
 
 
