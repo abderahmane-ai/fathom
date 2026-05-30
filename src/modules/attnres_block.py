@@ -63,7 +63,9 @@ class BlockAttnRes(nn.Module):
 
         values: torch.Tensor = torch.stack([*blocks, partial_block], dim=0)
         keys:   torch.Tensor = self._rms_norm(values)
-        logits: torch.Tensor = torch.einsum("d, n b s d -> n b s", self.pseudo_query, keys)
+        logits: torch.Tensor = torch.einsum(
+            "d, n b s d -> n b s", self.pseudo_query, keys
+        ) / (self.d_model ** 0.5)
         weights: torch.Tensor = logits.softmax(dim=0)
         return torch.einsum("n b s, n b s d -> b s d", weights, values)
 
@@ -104,6 +106,8 @@ class FullAttnRes(nn.Module):
             raise ValueError("State history must not be empty.")
         values = torch.stack(states, dim=0)
         keys   = self._rms_norm(values)
-        logits = torch.einsum("d, n b s d -> n b s", self.pseudo_query, keys)
+        logits = torch.einsum(
+            "d, n b s d -> n b s", self.pseudo_query, keys
+        ) / (self.d_model ** 0.5)
         weights = logits.softmax(dim=0)
         return torch.einsum("n b s, n b s d -> b s d", weights, values)

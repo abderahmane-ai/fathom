@@ -104,6 +104,7 @@ class RecurrentResidualCell(nn.Module):
         self.memory_norm = _MemoryNorm(d_model, eps=eps)
         self.memory_out  = nn.Linear(d_model, d_model, bias=False)
         self.h_norm      = _MemoryNorm(d_model, eps=eps)  # kept for potential future use
+        self.y_norm      = _MemoryNorm(d_model, eps=eps)
 
         # Low-rank weight init: tiny random weights so biases dominate at start.
         for proj in [self.read_proj, self.forget_proj, self.update_proj, self.damp_proj]:
@@ -174,14 +175,15 @@ class RecurrentResidualCell(nn.Module):
         """
         position = self._sublayer_position(layer_idx, sublayer)
         m_norm = self.memory_norm(m)
+        y_norm = self.y_norm(y)
 
-        read_gate   = torch.sigmoid(self.read_proj(y)       + self.depth_read_bias[position])
-        damp_gate   = torch.sigmoid(self.damp_proj(y)       + self.depth_damp_bias[position])
+        read_gate   = torch.sigmoid(self.read_proj(y_norm)   + self.depth_read_bias[position])
+        damp_gate   = torch.sigmoid(self.damp_proj(y_norm)   + self.depth_damp_bias[position])
         forget_gate = torch.sigmoid(self.forget_proj(m_norm) + self.depth_forget_bias[position])
-        update_gate = torch.sigmoid(self.update_proj(y)     + self.depth_update_bias[position])
+        update_gate = torch.sigmoid(self.update_proj(y_norm) + self.depth_update_bias[position])
 
         memory_read = self.memory_gain * self.memory_out(m_norm)
         h_new = damp_gate * h_prev + y + read_gate * memory_read
-        m_new = forget_gate * m + update_gate * y
+        m_new = forget_gate * m + update_gate * torch.tanh(y)
 
         return h_new, m_new

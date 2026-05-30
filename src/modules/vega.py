@@ -38,6 +38,17 @@ import torch.nn.functional as F
 from .norm import RMSNorm
 
 
+class _ParameterFreeRMSNorm(nn.Module):
+    """Parameter-free RMSNorm used only inside VEGACell."""
+
+    def __init__(self, eps: float = 1e-5) -> None:
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+
+
 class VEGACell(nn.Module):
     """VEGA depth-memory cell, shared (weight-tied) across all transformer layers.
 
@@ -84,6 +95,7 @@ class VEGACell(nn.Module):
         self.n_fast_heads = n_fast_heads
         self.r_head       = rank // n_heads
         self.eps          = eps
+        self.y_norm       = _ParameterFreeRMSNorm(eps=eps)
 
         # Projections into the rank-dimensional EMA space.
         # Fused Q, K, V projection to reduce GPU kernel launch overhead.
@@ -188,19 +200,28 @@ class VEGACell(nn.Module):
         S_prev, z_prev = state
         pos = layer_idx * 2 + sublayer
         B, Seq, _ = y.shape
+        y_norm = self.y_norm(y)
 
         # Project into the EMA space.
-        qkv = self.qkv_proj(y)
+        qkv = self.qkv_proj(y_norm)
         Q, K, V = qkv.chunk(3, dim=-1)
 
         K = K.view(B, Seq, self.n_heads, self.r_head)
         V = V.view(B, Seq, self.n_heads, self.r_head)
         Q = Q.view(B, Seq, self.n_heads, self.r_head)
-        g = torch.sigmoid(self.write_gate(y)).view(B, Seq, self.n_heads, self.r_head)
+        g = torch.sigmoid(self.write_gate(y_norm)).view(B, Seq, self.n_heads, self.r_head)
 
         # Add per-sublayer depth biases.
         K_dep = K + self.key_bias[pos].view(1, 1, self.n_heads, self.r_head)
         Q_dep = Q + self.query_bias[pos].view(1, 1, self.n_heads, self.r_head)
+
+        # Normalize and scale query and key vectors before the positive feature map.
+        K_dep = K_dep * torch.rsqrt(
+            K_dep.pow(2).mean(dim=-1, keepdim=True) + self.eps
+        ) / (self.r_head ** 0.5)
+        Q_dep = Q_dep * torch.rsqrt(
+            Q_dep.pow(2).mean(dim=-1, keepdim=True) + self.eps
+        ) / (self.r_head ** 0.5)
 
         # Positive feature map φ(x) = ELU(x) + 1 (ensures state positivity).
         K_phi = (F.elu(K_dep) + 1.0).float()
@@ -218,11 +239,11 @@ class VEGACell(nn.Module):
         c_out_slow = self.out_slow(self.norm_slow(c_slow))
 
         # Separate read gates per timescale — the key distinction from a single gate.
-        read_gates = self.read_proj(y)
+        read_gates = self.read_proj(y_norm)
         r_fast, r_slow = read_gates.chunk(2, dim=-1)
         r_fast = torch.sigmoid(r_fast)
         r_slow = torch.sigmoid(r_slow)
-        damp   = torch.sigmoid(self.damp_weight * y + self.damp_bias)
+        damp   = torch.sigmoid(self.damp_weight * y_norm + self.damp_bias)
 
         h_new = damp * h_prev + y + r_fast * c_out_fast + r_slow * c_out_slow
 
