@@ -3,16 +3,19 @@
   "benchmark_name": "lm_quality",
   "jobs": {
     "block_attnres": {
-      "object_id": "fc-01KSD3TVQ5RM388QP6SV68C3RN"
+      "object_id": "fc-01KSWKWRS5EP3ZB2DNNS45GF57"
     },
     "recurrent_residual": {
-      "object_id": "fc-01KSD3TVERFEYJB0ASP3EHTNGF"
+      "object_id": "fc-01KSWKWR9NQV50DY1QTKBVT6QJ"
     },
     "standard": {
-      "object_id": "fc-01KSD3TTZDNKJHJBT5HEPAG4S8"
+      "object_id": "fc-01KSWKWQZK7AYCCG82T6X4SEJQ"
+    },
+    "vega": {
+      "object_id": "fc-01KSWKWRJWRDAW7VNW9J2MHKEV"
     }
   },
-  "run_id": "lm_quality-20260524T134715Z",
-  "spawned_at": "2026-05-24T13:47:16.227715+00:00",
+  "run_id": "lm_quality-20260530T141631Z",
+  "spawned_at": "2026-05-30T14:16:32.432947+00:00",
   "volume": "rr-benchmark-artifacts"
 }

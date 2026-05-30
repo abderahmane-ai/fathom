@@ -73,7 +73,7 @@ trainer:
     warmup_steps: 200
     min_lr_ratio: 0.1
   optimizer:
-    lr: 8.0e-4
+    lr: 4.0e-4
     weight_decay: 0.1
     betas: [0.9, 0.95]
 
