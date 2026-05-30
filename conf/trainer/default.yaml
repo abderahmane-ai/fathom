@@ -3,7 +3,7 @@
 
 max_epochs: 10
 precision: bf16-mixed          # AMP via Lightning
-accumulate_grad_batches: 4     # effective batch = batch_size * 4
+accumulate_grad_batches: 4     # effective batch = batch_size × 4
 gradient_clip_val: 1.0
 log_every_n_steps: 50
 val_check_interval: 0.25       # validate 4× per epoch
@@ -13,7 +13,7 @@ strategy: auto
 num_nodes: 1
 
 logger:
-  name: tensorboard
+  name: csv                    # "wandb" enables Weights & Biases (requires WANDB_API_KEY)
   project: recurrent-residuals
   save_dir: logs
   offline: false
@@ -27,4 +27,4 @@ optimizer:
 scheduler:
   name: cosine
   warmup_steps: 2000
-  min_lr_ratio: 0.1            # final LR = 0.1 * peak_lr
+  min_lr_ratio: 0.1            # final LR = 0.1 × peak_lr

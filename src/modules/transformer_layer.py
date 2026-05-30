@@ -1,16 +1,38 @@
+"""Universal transformer layer supporting all residual modes.
+
+Each layer wraps one Attention sublayer and one FFN sublayer.  The residual
+connection style is determined by ``config.residual_mode``:
+
+    "standard"           — plain h = h + y (Pre-LN)
+    "recurrent_residual" — RR gated memory cell (shared across layers)
+    "vega"               — VEGA EMA depth-memory cell (shared across layers)
+    "block_attnres"      — BlockAttnRes softmax aggregation over block history
+    "full_attnres"       — FullAttnRes softmax aggregation over all sublayer states
+"""
+
 from __future__ import annotations
-from typing import Any, cast
+
+from typing import Any
+
 import torch
 import torch.nn as nn
 
-# Import RMSNorm from VEGACell module
-from .vega import RMSNorm, VEGACell
-from .recurrent_residual import RecurrentResidualCell
 from .attention import Attention
+from .attnres_block import BlockAttnRes, FullAttnRes
 from .ffn import FeedForward
+from .norm import RMSNorm
+from .recurrent_residual import RecurrentResidualCell
+from .vega import VEGACell
+
 
 class TransformerLayer(nn.Module):
-    """Universal Transformer layer supporting gated and block residuals."""
+    """One transformer layer with a pluggable residual mechanism.
+
+    Args:
+        config: OmegaConf config object (see ``conf/model/``).
+        rr_cell: Pre-built RecurrentResidualCell to share; created from config if None.
+        vega_cell: Pre-built VEGACell to share; created from config if None.
+    """
 
     def __init__(
         self,
@@ -20,25 +42,26 @@ class TransformerLayer(nn.Module):
     ) -> None:
         super().__init__()
 
-        # Use RMSNorm to match modern backbones and the internal cell norms
         self.ln_1 = RMSNorm(config.d_model)
         self.ln_2 = RMSNorm(config.d_model)
-
         self.attn = Attention(config.d_model, config.n_heads, getattr(config, "dropout", 0.1))
-        self.ffn = FeedForward(config.d_model, config.ff_dim, getattr(config, "dropout", 0.1))
+        self.ffn  = FeedForward(config.d_model, config.ff_dim, getattr(config, "dropout", 0.1))
 
-        self.rr_cell: nn.Module | None = None
+        self.rr_cell:   RecurrentResidualCell | None = None
         self.vega_cell: VEGACell | None = None
 
         if config.residual_mode == "recurrent_residual":
             if rr_cell is None:
                 rr_cfg = config.recurrent_residual
                 rr_cell = RecurrentResidualCell(
-                    config.d_model, config.num_layers,
+                    config.d_model,
+                    config.num_layers,
                     read_gate_bias=rr_cfg.read_gate_bias,
                     forget_gate_bias=getattr(rr_cfg, "forget_gate_bias", 3.0),
                     update_gate_bias=rr_cfg.update_gate_bias,
-                    eps=rr_cfg.eps, gate_init_std=rr_cfg.gate_init_std,
+                    damp_gate_bias=getattr(rr_cfg, "damp_gate_bias", 3.0),
+                    eps=rr_cfg.eps,
+                    gate_init_std=rr_cfg.gate_init_std,
                     memory_gain_init=rr_cfg.memory_gain_init,
                 )
             self.rr_cell = rr_cell
@@ -47,32 +70,34 @@ class TransformerLayer(nn.Module):
             if vega_cell is None:
                 vega_cfg = config.vega
                 vega_cell = VEGACell(
-                    config.d_model, config.num_layers,
+                    config.d_model,
+                    config.num_layers,
                     rank=vega_cfg.rank,
                     n_heads=getattr(vega_cfg, "n_heads", 4),
                     n_fast_heads=getattr(vega_cfg, "n_fast_heads", 2),
                     read_gate_bias=vega_cfg.read_gate_bias,
                     write_gate_bias=getattr(vega_cfg, "write_gate_bias", -2.0),
                     damp_gate_bias=getattr(vega_cfg, "damp_gate_bias", 3.0),
-                    eps=vega_cfg.eps, gate_init_std=vega_cfg.gate_init_std,
+                    eps=vega_cfg.eps,
+                    gate_init_std=vega_cfg.gate_init_std,
                 )
             self.vega_cell = vega_cell
 
         elif config.residual_mode == "block_attnres":
-            from .attnres_block import BlockAttnRes
             block_size: int = config.attnres_block.block_size
             if block_size < 2 or block_size % 2 != 0:
-                raise ValueError("attnres_block.block_size must be an even sublayer count.")
+                raise ValueError("attnres_block.block_size must be an even sublayer count ≥ 2.")
             self.layers_per_block: int = block_size // 2
             self.attn_res = BlockAttnRes(config.d_model)
-            self.ffn_res = BlockAttnRes(config.d_model)
+            self.ffn_res  = BlockAttnRes(config.d_model)
 
         elif config.residual_mode == "full_attnres":
-            from .attnres_block import FullAttnRes
             self.full_attn_res = FullAttnRes(config.d_model)
-            self.full_ffn_res = FullAttnRes(config.d_model)
+            self.full_ffn_res  = FullAttnRes(config.d_model)
 
         self.residual_mode: str = config.residual_mode
+
+    # ── Standard / RR / VEGA forward ────────────────────────────────────────
 
     def forward(
         self,
@@ -80,58 +105,83 @@ class TransformerLayer(nn.Module):
         layer_idx: int,
         m: Any = None,
     ) -> tuple[torch.Tensor, Any]:
-        """Forward pass for standard, recurrent_residual, and vega modes."""
-        if self.residual_mode in {"block_attnres", "full_attnres"}:
-            raise ValueError("Use the specific Attention Residual forward path for this mode.")
+        """Forward pass for standard, recurrent_residual, and vega modes.
 
-        # ── Attention sublayer ────────────────────────────────────────────
-        x_norm = self.ln_1(x)
-        y_attn = self.attn(x_norm)
+        Args:
+            x: Input hidden state, shape (B, S, d_model).
+            layer_idx: 0-based layer index (used for depth biases).
+            m: Memory state — None for standard, tensor for RR, tuple for VEGA.
+
+        Returns:
+            ``(h_new, m_new)`` where m_new is None for standard mode.
+
+        Raises:
+            ValueError: If called in block_attnres or full_attnres mode.
+        """
+        if self.residual_mode in {"block_attnres", "full_attnres"}:
+            raise ValueError(
+                f"Use forward_attnres / forward_full_attnres for mode '{self.residual_mode}'."
+            )
+
+        # Attention sublayer
+        x_norm  = self.ln_1(x)
+        y_attn  = self.attn(x_norm)
 
         if self.residual_mode == "standard":
-            h_mid = x + y_attn
-            m_mid = None
+            h_mid, m_mid = x + y_attn, None
         elif self.residual_mode == "recurrent_residual":
-            assert m is not None, "Memory state m is required"
-            # pyrefly: ignore [not-callable]
-            h_mid, m_mid = self.rr_cell(x, y_attn, m, layer_idx, sublayer=0, h_norm=x_norm)
+            assert m is not None and self.rr_cell is not None
+            h_mid, m_mid = self.rr_cell(x, y_attn, m, layer_idx, sublayer=0)
         elif self.residual_mode == "vega":
             assert m is not None and self.vega_cell is not None
-            # pyrefly: ignore [not-callable]
-            h_mid, m_mid = self.vega_cell(x, y_attn, m, layer_idx, sublayer=0, h_norm=x_norm)
+            h_mid, m_mid = self.vega_cell(x, y_attn, m, layer_idx, sublayer=0)
+        else:
+            raise ValueError(f"Unknown residual_mode: '{self.residual_mode}'")
 
-        # ── FFN sublayer ──────────────────────────────────────────────────
+        # FFN sublayer
         h_norm = self.ln_2(h_mid)
-        y_ffn = self.ffn(h_norm)
+        y_ffn  = self.ffn(h_norm)
 
         if self.residual_mode == "standard":
-            h_new = h_mid + y_ffn
-            m_new = None
+            h_new, m_new = h_mid + y_ffn, None
         elif self.residual_mode == "recurrent_residual":
-            assert m_mid is not None
-            # pyrefly: ignore [not-callable]
-            h_new, m_new = self.rr_cell(h_mid, y_ffn, m_mid, layer_idx, sublayer=1, h_norm=h_norm)
+            assert m_mid is not None and self.rr_cell is not None
+            h_new, m_new = self.rr_cell(h_mid, y_ffn, m_mid, layer_idx, sublayer=1)
         elif self.residual_mode == "vega":
-            assert m_mid is not None
-            # pyrefly: ignore [not-callable]
-            h_new, m_new = self.vega_cell(h_mid, y_ffn, m_mid, layer_idx, sublayer=1, h_norm=h_norm)
-            
+            assert m_mid is not None and self.vega_cell is not None
+            h_new, m_new = self.vega_cell(h_mid, y_ffn, m_mid, layer_idx, sublayer=1)
+        else:
+            raise ValueError(f"Unknown residual_mode: '{self.residual_mode}'")
+
         return h_new, m_new
+
+    # ── Block AttnRes forward ────────────────────────────────────────────────
 
     def forward_attnres(
         self,
         blocks: list[torch.Tensor],
         partial_block: torch.Tensor,
         layer_idx: int,
-    ) -> tuple[
-        list[torch.Tensor], torch.Tensor
-    ]:
-        # Pre-Attn aggregation from previous blocks.
+    ) -> tuple[list[torch.Tensor], torch.Tensor]:
+        """Forward pass for block_attnres mode.
+
+        Aggregates over completed blocks before each sublayer, then appends
+        the current partial block to the history when a block boundary is reached.
+
+        Args:
+            blocks: Completed block states (including the embedding source).
+            partial_block: Current in-block accumulated state.
+            layer_idx: 0-based layer index (determines block boundaries).
+
+        Returns:
+            ``(blocks, partial_block)`` — updated history and current state.
+        """
+        # Pre-attention aggregation across block history.
         h_in = self.attn_res(blocks, partial_block)
         y_attn = self.attn(self.ln_1(h_in))
         partial_block = partial_block + y_attn
 
-        # Pre-FFN aggregation from previous blocks.
+        # Pre-FFN aggregation across block history.
         h_in = self.ffn_res(blocks, partial_block)
         y_ffn = self.ffn(self.ln_2(h_in))
         partial_block = partial_block + y_ffn
@@ -139,31 +189,34 @@ class TransformerLayer(nn.Module):
         if (layer_idx + 1) % self.layers_per_block == 0:
             blocks = [*blocks, partial_block]
 
-        output = (blocks, partial_block)
-        for hook in self._forward_hooks.values():
-            hook(self, (blocks, partial_block, layer_idx), output)
-
         return blocks, partial_block
+
+    # ── Full AttnRes forward ─────────────────────────────────────────────────
 
     def forward_full_attnres(
         self,
         history: list[torch.Tensor],
         x: torch.Tensor,
-    ) -> tuple[
-        list[torch.Tensor], torch.Tensor
-    ]:
-        h_in = self.full_attn_res([*history, x])
+    ) -> tuple[list[torch.Tensor], torch.Tensor]:
+        """Forward pass for full_attnres mode.
+
+        Appends every intermediate state to the growing history list.
+
+        Args:
+            history: All hidden states produced so far (including the embedding).
+            x: Current hidden state entering this layer.
+
+        Returns:
+            ``(history, h_new)`` — extended history and updated hidden state.
+        """
+        h_in  = self.full_attn_res([*history, x])
         y_attn = self.attn(self.ln_1(h_in))
-        h_mid = x + y_attn
+        h_mid  = x + y_attn
         history = [*history, h_mid]
 
-        h_in = self.full_ffn_res(history)
-        y_ffn = self.ffn(self.ln_2(h_in))
-        h_new = h_mid + y_ffn
+        h_in  = self.full_ffn_res(history)
+        y_ffn  = self.ffn(self.ln_2(h_in))
+        h_new  = h_mid + y_ffn
         history = [*history, h_new]
-
-        output = (history, h_new)
-        for hook in self._forward_hooks.values():
-            hook(self, (history, x), output)
 
         return history, h_new

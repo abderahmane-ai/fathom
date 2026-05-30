@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "recurrent-residuals"
 version = "0.1.0"
-description = "Recurrent Residuals and Block Attention Residuals for transformer language models"
+description = "Comparing VEGA, Recurrent Residuals, and Attention Residuals for transformer LMs"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -17,9 +17,6 @@ dependencies = [
     "datasets>=2.18.0",
     "pyarrow>=15.0.0",
     "transformers>=4.39.0",   # tokenizer only
-    "einops",
-    "jaxtyping>=0.2.28",
-    "beartype>=0.17.2",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +24,7 @@ dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "ruff>=0.4.0",
+    "pyrefly>=0.14.0",
 ]
 benchmarks = [
     "modal>=1.4.0",

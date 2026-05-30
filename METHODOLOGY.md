@@ -2,261 +2,201 @@
 
 ## 1. Introduction
 
-The standard Transformer architecture relies on additive residual connections to facilitate gradient flow and enable training of deep networks. However, as models scale to extreme depths, these connections suffer from "information dilution," where the signals from early layers are progressively obscured by the cumulative noise of subsequent transformations. This document is a comparative study of **residual stream mechanisms** for the depth dimension—examining how different architectural choices (simple addition, attention over depth, recurrent gating, and hybrid sliding-window covariance) affect information persistence, gradient flow, and language-model quality on a common Pre‑LN backbone.
+Standard transformers use additive residual connections to ease gradient flow. At extreme depth, these connections accumulate layer outputs without selectivity, causing early-layer signals to be progressively obscured — a problem termed **information dilution**. This document defines the mathematics of four residual mechanisms compared in this project and explains the evaluation metrics used to measure information preservation.
 
 ---
 
-## 2. The Problem: Dilution and Complexity
+## 2. Standard Residuals (Baseline)
 
-### 2.1 Standard Residuals (The Dilution Problem)
+In a Pre-LN transformer, each sublayer computes:
 
-In a standard Pre‑LN Transformer, each layer performs the operation:
+$$h_{l+1} = h_l + \mathcal{F}_l(\text{LayerNorm}(h_l))$$
 
-$$
-h_{l+1} = h_l + \text{Sublayer}(\text{LayerNorm}(h_l))
-$$
-
-While effective for gradient propagation, this fixed‑weight addition ($1.0 \cdot h_l$) results in a uniform accumulation of all prior outputs. In very deep models, the specific features learned in early layers are "diluted" by the sum of dozens or hundreds of later layers. The model lacks a mechanism to selectively "carry forward" critical information or "filter out" irrelevant updates.
-
-### 2.2 Attention Residuals (The Complexity Problem)
-
-**Attention Residuals (AttnRes)** address dilution by treating the depth dimension as a sequence, using softmax attention to aggregate previous states:
-
-$$
-h_{l+1} = \sum_{i=0}^{l} \text{softmax}(q_{l} \cdot k_{i}) v_{i}
-$$
-
-While this allows "Random Access" to any previous layer, it introduces a memory and compute bottleneck that scales linearly with depth ($O(L)$). For a 1,000‑layer model, every layer must attend to 1,000 previous representations, making it prohibitively expensive for large‑scale deployment. Furthermore, the depth‑wise softmax creates attention‑sink dynamics that amplify outliers and harm quantisation.
+The skip connection is a **fixed, uniform weight** of 1. No gate selects which historical information is relevant. In a 100-layer model, every early representation is smeared across a sum of 200 sublayer outputs.
 
 ---
 
-## 3. Recurrent Residuals (RR): Gated Working Memory
+## 3. Recurrent Residuals (RR)
 
-Recurrent Residuals replace the "Random Access" of attention with a **"Working Memory"** approach. Instead of looking back at every layer, the model maintains a persistent per‑token memory state $\mathbf{m}$ that is recurrently updated as information flows deeper into the network.
+RR replaces uniform accumulation with a **gated depth-wise working memory** $\mathbf{m}$ that flows through the entire layer stack alongside the hidden state $\mathbf{h}$.
 
-### 3.1 Core Philosophy
+### 3.1 Per-Sublayer Equations
 
-The RR mechanism treats the entire depth of the Transformer as a single recurrent process. Instead of independent residuals per layer, the model maintains a **persistent memory state** $\mathbf{m}$ that flows through the entire stack alongside the hidden state $\mathbf{h}$.
+$$\mathbf{y}_l = \mathcal{F}_l(\text{LayerNorm}(\mathbf{h}_{l-1}))$$
 
-As the hidden state progresses from Layer 1 to Layer $L$, it continuously interacts with this memory through two gated operations: a **read gate** that injects historical context into the current computation, and an **update gate** that selectively writes new information into the memory. This architecture effectively turns the Transformer into a "Depth‑RNN," where each sublayer is a step in a recurrent transition. Information captured in the very first attention head can be preserved and retrieved in the final feed‑forward network without duplication or dilution.
+**Read gate** (how much memory to inject):
+$$\mathbf{r}_l = \sigma(\mathbf{W}_r \mathbf{y}_l + \mathbf{p}_r[l])$$
 
----
+**Damp gate** (how much of the previous hidden state to keep):
+$$\mathbf{d}_l = \sigma(\mathbf{W}_d \mathbf{y}_l + \mathbf{p}_d[l])$$
 
-## 4. Mathematical Framework
+**Hidden state update**:
+$$\mathbf{h}_l = \mathbf{d}_l \odot \mathbf{h}_{l-1} + \mathbf{y}_l + \mathbf{r}_l \odot (\mathbf{g}_m \odot \text{RMSNorm}(\mathbf{m}_{l-1}))$$
 
-The RR mechanism consists of two primary operations per sublayer: **Reading** (injection of memory) and **Updating** (revision of memory). All gates use diagonal weights (element‑wise products) for both computational efficiency and inductive alignment with optimal depth‑wise gating.
+**Forget gate** (how much of the old memory to retain):
+$$\mathbf{f}_l = \sigma(\mathbf{W}_f \text{RMSNorm}(\mathbf{m}_{l-1}) + \mathbf{p}_f[l])$$
 
-$$
-\boxed{
-\left\{
-\begin{aligned}
-\mathbf{y}_l &= \mathcal{F}_l\!\bigl(\mathrm{LayerNorm}(\mathbf{h}_{l-1})\bigr) \\[4pt]
-\mathbf{r}_l &= \sigma\!\bigl(\mathbf{w}_r \odot \mathrm{LayerNorm}(\mathbf{h}_{l-1}) + \mathbf{b}_r\bigr) \qquad \text{(read gate)} \\[4pt]
-\mathbf{h}_l &= \mathbf{h}_{l-1} + \mathbf{y}_l + \mathbf{r}_l \odot \bigl(\mathbf{g}_m \odot \mathrm{RMSNorm}(\mathbf{m}_{l-1})\bigr) \\[4pt]
-\mathbf{f}_l &= \sigma\!\bigl(\mathbf{w}_f \odot \mathbf{y}_l + \mathbf{b}_f\bigr) \qquad \text{(forget gate)} \\[4pt]
-\mathbf{u}_l &= \sigma\!\bigl(\mathbf{w}_u \odot \mathbf{y}_l + \mathbf{b}_u + \mathbf{p}_l\bigr) \qquad \text{(update gate)} \\[4pt]
-\mathbf{m}_l &= \mathbf{f}_l \odot \mathbf{m}_{l-1} + \mathbf{u}_l \odot \mathbf{y}_l
-\end{aligned}
-\right.
-}
-$$
+**Update gate** (how aggressively to write the new output):
+$$\mathbf{u}_l = \sigma(\mathbf{W}_u \mathbf{y}_l + \mathbf{p}_u[l])$$
 
-**Components:**
+**Memory update**:
+$$\mathbf{m}_l = \mathbf{f}_l \odot \mathbf{m}_{l-1} + \mathbf{u}_l \odot \mathbf{y}_l$$
 
-- $\mathbf{h}_{l-1}$ : hidden state entering layer $l$; $\mathbf{h}_0$ is the token embedding.
-- $\mathbf{m}_{l-1}$ : memory state entering layer $l$; $\mathbf{m}_0$ is a learnable initial memory vector (initialized to $\mathbf{0}$).
-- $\mathbf{y}_l$ : output of the sublayer (attention or feed‑forward) after layer normalisation.
-- $\mathbf{r}_l$ : **read gate**—decides how much memory to inject, per dimension. Computed from the normalised hidden state to prevent depth‑dependent saturation.
-- $\mathbf{g}_m$ : **memory gain**—learnable per‑dimension gain applied to the RMS‑normalised memory before injection.
-- $\mathbf{f}_l$ : **forget gate**—controls the retention of the old memory state $\mathbf{m}_{l-1}$ per dimension.
-- $\mathbf{u}_l$ : **update gate**—controls the accumulation of the new output $\mathbf{y}_l$ per dimension.
-- $\mathbf{p}_l$ : **layer position bias**—a learned per‑layer depth bias that gives each layer a position‑specific prior for how aggressively to write into memory.
+All gate weights $\mathbf{W}_*$ use a low-rank factorization ($d \to \text{rank} \to d$) and per-sublayer depth position biases $\mathbf{p}_*[l]$.
 
-All weight vectors ($\mathbf{w}_r, \mathbf{w}_f, \mathbf{w}_u, \mathbf{g}_m$) are diagonal, i.e. applied as $\mathbf{w} \odot \mathbf{x}$. This is theoretically motivated: AttnRes’s own ablation shows that per‑channel mixing in depth‑wise attention hurts performance, making diagonal weights not just cheaper but empirically optimal.
+### 3.2 Zero-Start Initialization
 
-### 4.1 Memory Injection (The Read Gate)
+At the start of training the cell behaves exactly like a standard Pre-LN transformer:
 
-At each sublayer, the model decides how much of the persistent memory context should be merged into the current hidden state. This is controlled by the read gate $\mathbf{r}_l$:
+| Parameter | Initial Value | Effect |
+|---|---|---|
+| $\mathbf{g}_m$ | $0$ | Memory injection term is zero |
+| bias($\mathbf{r}$) | $-3$ | Read gate $\approx 0.047$ (nearly closed) |
+| bias($\mathbf{d}$) | $+3$ | Damp gate $\approx 0.953$ ($h_{prev}$ mostly kept) |
+| bias($\mathbf{f}$) | $+3$ | Forget gate $\approx 0.953$ (retentive) |
+| bias($\mathbf{u}$) | $-2$ | Update gate $\approx 0.119$ (conservative write) |
 
-$$
-\mathbf{r}_l = \sigma\!\bigl(\mathbf{w}_r \odot \mathrm{LayerNorm}(\mathbf{h}_{l-1}) + \mathbf{b}_r\bigr)
-$$
+As training progresses, $\mathbf{g}_m$ departs from zero and the gates specialise.
 
-$$
-\mathbf{h}_l = \mathbf{h}_{l-1} + \mathbf{y}_l + \mathbf{r}_l \odot \bigl(\mathbf{g}_m \odot \mathrm{RMSNorm}(\mathbf{m}_{l-1})\bigr)
-$$
+### 3.3 Parameter Overhead
 
-The read gate operates on $\mathrm{LayerNorm}(\mathbf{h}_{l-1})$ to remain responsive at all depths. The memory is RMS‑normalised before projection by $\mathbf{g}_m$, so the gain vector controls only directional emphasis, not arbitrary scaling. The memory is read **before** being updated (i.e., using $\mathbf{m}_{l-1}$), ensuring $\mathbf{y}_l$ contributes to $\mathbf{h}_l$ only once through the direct residual path.
-
-### 4.2 Memory Update (Gated Gating)
-
-After the sublayer transformation is computed, the persistent memory is updated using independent forget and update gates:
-
-$$
-\mathbf{f}_l = \sigma\!\bigl(\mathbf{w}_f \odot \mathbf{y}_l + \mathbf{b}_f\bigr)
-$$
-
-$$
-\mathbf{u}_l = \sigma\!\bigl(\mathbf{w}_u \odot \mathbf{y}_l + \mathbf{b}_u + \mathbf{p}_l\bigr)
-$$
-
-$$
-\mathbf{m}_l = \mathbf{f}_l \odot \mathbf{m}_{l-1} + \mathbf{u}_l \odot \mathbf{y}_l
-$$
-
-The forget gate regulates the retention of historical memory, while the update gate regulates the accumulation of new information. By decoupling the gating mechanisms, the model eliminates the zero-sum trade-off inherent in coupled updates (where writing new content forces forgetting old content). This allows early representations to persist across depth while new representations are integrated independently.
+For a model with $L$ layers and $S = 2L$ sublayers, depth biases add $4 \times S \times d$ parameters.  Memory state size is $2d$ per token (both $\mathbf{h}$ and $\mathbf{m}$ are retained).
 
 ---
 
-## 5. Initialisation and Stability
+## 4. VEGA — Vertical EMA Gated Attention
 
-### 5.1 Zero‑Start Protocol
+VEGA maintains a **linear-attention EMA state** $\mathbf{S} \in \mathbb{R}^{n_{\text{heads}} \times r \times r}$ per token that accumulates key-value outer products across depth, with **separate fast and slow head groups** for multi-scale temporal coverage.
 
-The mechanism is initialised so that at $t=0$ the model behaves **exactly** as a standard Pre‑LN Transformer:
+### 4.1 Projections
 
-- $\mathbf{g}_m = \mathbf{0}$ — injection term is zero regardless of memory content.
-- $\mathbf{b}_r = -3$ — read gate $\mathbf{r}_l \approx 0.047$ (closed, but with non‑zero gradient).
-- $\mathbf{b}_f = 3$ — forget gate $\mathbf{f}_l \approx 0.952$ (highly retentive to preserve early layer outputs).
-- $\mathbf{b}_u = -2$ — update gate $\mathbf{u}_l \approx 0.119$ (conservative writing).
-- $\mathbf{p}_l = \mathbf{0}$ for all $l$ — all layers start with equal write bias.
-- $\mathbf{w}_r, \mathbf{w}_f, \mathbf{w}_u \sim \mathcal{N}(0, 0.01^2)$ — minor random asymmetry, negligible next to bias magnitude.
-- $\mathbf{m}_0 = \mathbf{0}$ (learnable initial memory, starting from zero).
+Each sublayer projects the current output $\mathbf{y}$ into the EMA space:
+$$\mathbf{K} = \mathbf{W}_K \mathbf{y}, \quad \mathbf{V} = \mathbf{W}_V \mathbf{y}, \quad \mathbf{Q} = \mathbf{W}_Q \mathbf{y}$$
 
-The standard skip connection $\mathbf{h}_{l-1}$ remains untouched, providing an unchanging gradient highway. As training proceeds, $\mathbf{g}_m$ departs from zero and the gates specialise, letting the memory path activate gradually.
+Depth-position biases are added before the feature map:
+$$\mathbf{K}_{dep} = \mathbf{K} + b_K[pos], \quad \mathbf{Q}_{dep} = \mathbf{Q} + b_Q[pos]$$
 
-### 5.2 Bounded Norm Dynamics
+The positive feature map $\phi(\mathbf{x}) = \text{ELU}(\mathbf{x}) + 1$ ensures state positivity.
 
-The memory $\mathbf{m}_l$ is updated with sigmoid-bounded gates $\mathbf{f}_l, \mathbf{u}_l \in [0, 1]^d$. The read path applies RMSNorm to $\mathbf{m}_{l-1}$ before injection, preventing scale explosion and ensuring stability even under additive updates. The hidden state $\mathbf{h}_l$ receives the injection as a strictly additive, gated contribution; the core residual branch remains intact, so gradient flow and activation magnitude stay well‑behaved.
+### 4.2 State Retrieval
 
----
+Linear-attention retrieval from the previous state $\mathbf{S}_{prev}$:
 
-| Component | Parameters |
-|-----------|------------|
-| Read gate weight $\mathbf{w}_r$ | $d$ |
-| Read gate bias $\mathbf{b}_r$ | $d$ |
-| Memory gain $\mathbf{g}_m$ | $d$ |
-| Forget gate weight $\mathbf{w}_f$ | $d$ |
-| Forget gate bias $\mathbf{b}_f$ | $d$ |
-| Update gate weight $\mathbf{w}_u$ | $d$ |
-| Update gate bias $\mathbf{b}_u$ | $d$ |
-| Sublayer position biases $\{\mathbf{p}_s\}_{s=1}^S$ | $S \cdot d$ |
-| Initial memory $\mathbf{m}_0$ | $d$ |
-| **Total** | $(S + 8)d$ |
+$$c = \frac{\phi(\mathbf{Q}_{dep})^\top \mathbf{S}_{prev}}{\phi(\mathbf{Q}_{dep})^\top \mathbf{z}_{prev} + \varepsilon}$$
 
-Here $S$ is the number of residual transitions. For a decoder layer with attention and feed‑forward sublayers, $S = 2L$. A 12‑layer model with $d = 4096$ therefore adds approximately **131k parameters**, completely independent of the main model size. The per‑sublayer compute overhead is $O(d)$ (element‑wise operations), with no attention, no block partitions, and no cached layer outputs.
+The retrieval $c$ is split into fast and slow halves by head group, then projected through separate output layers:
 
----
+$$c_\text{out\_fast} = \text{out\_fast}(\text{RMSNorm}(c_\text{fast}))$$
+$$c_\text{out\_slow} = \text{out\_slow}(\text{RMSNorm}(c_\text{slow}))$$
 
-## 6.5 VEGA: Vertical EMA Gated Attention
+### 4.3 Hidden State Update
 
-VEGA combines multi-scale depth memory to capture context at different timescales:
+Separate read gates per timescale — this is the key design distinction:
 
-**Multi-Scale Depth Memory:** Instead of a FIFO window, VEGA partitions heads into "fast" and "slow" decay groups within a single linear-attention EMA state. This allows the model to dynamically learn to retain information at different timescales (local vs. global depth context) without the memory overhead of a FIFO buffer.
+$$\mathbf{r}_\text{fast} = \sigma(\mathbf{W}_\text{rf} \mathbf{y}), \quad \mathbf{r}_\text{slow} = \sigma(\mathbf{W}_\text{rs} \mathbf{y}), \quad \boldsymbol{\delta} = \sigma(\mathbf{w}_d \odot \mathbf{y} + \mathbf{b}_d)$$
 
-**EMA State Update:** The state $\mathbf{S} \in \mathbb{R}^{H \times r \times r}$ is updated as an exponential moving average:
+$$\mathbf{h}_\text{new} = \boldsymbol{\delta} \odot \mathbf{h}_\text{prev} + \mathbf{y} + \mathbf{r}_\text{fast} \odot c_\text{out\_fast} + \mathbf{r}_\text{slow} \odot c_\text{out\_slow}$$
 
-$$
-\mathbf{S}_l = \boldsymbol{\alpha}_l \odot \mathbf{S}_{l-1} + \boldsymbol{\phi}(\mathbf{k}_l)^{\!\top} \mathbf{v}_l
-$$
+### 4.4 EMA State Update
 
-$$
-c_{\text{deep}} = \frac{\boldsymbol{\phi}(\mathbf{q}_l)^\top \mathbf{S}_{l-1}}{\boldsymbol{\phi}(\mathbf{q}_l)^\top \mathbf{z}_{l-1} + \varepsilon}
-$$
+$$\boldsymbol{\alpha} = \sigma(\text{decay}[pos]) \quad (\text{per-head, per-rank decay gates})$$
 
-where $\boldsymbol{\phi}(x) = \text{ELU}(x) + 1$ ensures unconditional stability, and $\boldsymbol{\alpha}_l$ are per-head, per-rank decay gates initialized with logarithmic timescale spacing (from 1-step to $2L$-step memory half-lives).
+$$\mathbf{S}_\text{new} = \boldsymbol{\alpha} \odot \mathbf{S}_\text{prev} + \phi(\mathbf{K}_{dep})^\top \otimes (g \odot \mathbf{V})$$
+$$\mathbf{z}_\text{new} = \boldsymbol{\alpha} \odot \mathbf{z}_\text{prev} + \phi(\mathbf{K}_{dep})$$
 
-**Key initialisation choices:**
-- Decay gates initialized log-linearly so each head specializes in a different depth horizon.
-- Learned Depth Pseudo-Queries (`query_bias`) initialized to zero (Zero-Start compliant).
-- Projection matrices $\mathbf{W}_K, \mathbf{W}_Q, \mathbf{W}_V$ initialized orthogonally.
-- Memory gain $\mathbf{g}_m = \mathbf{1}$, controlled by a closed read gate at init, so the model starts as a standard Pre-LN Transformer.
+where $g = \sigma(\mathbf{W}_g \mathbf{y})$ is a write gate that controls how much of $\mathbf{V}$ enters the state.
+
+### 4.5 Initialization
+
+- Decay gates initialized log-linearly: fast heads cover depth horizons $[1, \text{rank}]$, slow heads cover $[\text{rank}, 2L]$.
+- Output projections $\mathbf{W}_\text{out\_fast}$, $\mathbf{W}_\text{out\_slow}$ zero-initialized → zero-start compliant.
+- Key, value, query projections initialized orthogonally for conditioning.
 
 ---
 
-## 7. Comparison of Approaches
+## 5. Attention Residuals (AttnRes) — Moonshot AI
 
-| Feature | Standard Residuals | Attention Residuals | Recurrent Residuals | VEGA |
-| :--- | :--- | :--- | :--- | :--- |
-| **Logic** | Simple Addition | Depth‑wise Softmax | Gated Recurrency (Decoupled) | FIFO Window + Low-Rank Linear Attn |
-| **Information Flow** | Passive Accumulation | Selective Retrieval | Selective Persistence | Local Exact + Deep Covariance |
-| **Complexity (per layer)** | $O(d)$ | $O(Ld)$ (full) / $O(Bd)$ (block) | $O(d)$ | $O(Wd + rd)$ |
-| **Memory Cost (per token)** | $O(d)$ | $O(Ld)$ (full) / $O(Bd)$ (block) | $O(2d)$ | $O(Wd + nrd_v)$ |
-| **Softmax over Depth** | No | Yes | No | No (local only) |
-| **Hyperparameters Added** | 0 | Block size, sink tokens, rescaling | 0 | Window size $W$, rank $r$, heads $H$ |
-| **Stability** | Norm grows with depth | Attention‑sink outliers | Provably bounded norms | Linear-attn positivity constraint |
-| **Initialisation Sensitivity** | Low | Medium (pseudo‑query zero‑init) | None (starts as standard Transformer) | None (Zero-Start compliant) |
+**Reference:** Kimi Team / Moonshot AI, "Attention Residuals", arXiv:2603.15031.
 
----
+AttnRes treats the depth dimension as a sequence and uses a **learned pseudo-query** to softmax-aggregate over previous block states. The practical variant, **BlockAttnRes**, groups layers into blocks to keep memory cost bounded.
 
-## 8. Evaluation Metrics: Probing Representation Dynamics
+### 5.1 BlockAttnRes Equations
 
-To systematically evaluate whether a residual connection prevents information loss across depth, we define two complementary closed-form probing metrics. Rather than training auxiliary neural probes (which introduces optimization noise and hyperparameters), both metrics are computed in a single pass using Ridge Regression in closed form.
+Let $B_0, B_1, \ldots, B_{n-1}$ be the states at completed block boundaries, and $B_\text{cur}$ be the current in-block accumulation.
 
-### 8.1 Depth Preservation Score (DPS) & Dilution Resistance Index (DRI)
+$$\text{values} = \text{stack}([B_0, B_1, \ldots, B_{n-1}, B_\text{cur}]) \in \mathbb{R}^{(n+1) \times d}$$
 
-The **Depth Preservation Score (DPS)** measures the degree to which the *entirety* of an intermediate representation is linearly accessible from the final hidden state.
+$$\text{logits} = \mathbf{q}^\top \text{RMSNorm}(\text{values}) \quad (\mathbf{q} \in \mathbb{R}^d \text{ is the pseudo-query})$$
 
-Let $\mathbf{a}_k^{(i)} \in \mathbb{R}^d$ be the parameter-free normalized activation of layer $k$ for token $i$, and let $\mathbf{s}^{(i)} \in \mathbb{R}^d$ be the final hidden state before the LM head. We fit a linear map $(\mathbf{W}, \mathbf{b})$ to reconstruct $\mathbf{a}_k$ from $\mathbf{s}$:
+$$\mathbf{w} = \text{softmax}(\text{logits}) \in \mathbb{R}^{n+1}$$
 
-$$
-\mathrm{DPS}(k) = 1 - \frac{\sum_{i=1}^N \|\mathbf{a}_k^{(i)} - (\mathbf{W}\mathbf{s}^{(i)} + \mathbf{b})\|^2}{\sum_{i=1}^N \|\mathbf{a}_k^{(i)} - \bar{\mathbf{a}}_k\|^2}
-$$
+$$\mathbf{h}_\text{new} = \sum_{i} w_i \, \text{values}_i$$
 
-The projection parameters $\mathbf{W} \in \mathbb{R}^{d \times d}$ and $\mathbf{b} \in \mathbb{R}^d$ are solved in closed form using Ridge Regression with regularizer $\lambda = 1.0$. 
+**Zero-start:** $\mathbf{q} = \mathbf{0}$ at init → logits are all zero → uniform weights → output is the mean of all block states. This is a well-defined, stable starting point that degrades gracefully to a mean residual.
 
-The **Dilution Resistance Index (DRI)** is the average DPS over the first half of the network, summarizing how well early information is preserved:
+### 5.2 FullAttnRes
 
-$$
-\mathrm{DRI} = \frac{1}{\lfloor L/2 \rfloor} \sum_{k=1}^{\lfloor L/2 \rfloor} \mathrm{DPS}(k)
-$$
+Keeps the complete history of all sublayer states. Every layer attends to every prior state. Memory cost is $O(2L \times d)$, limiting practical use to small models. Used in this project as a diagnostic reference.
 
-> [!NOTE]
-> **Linearity Bound**: DPS is a *lower bound* on information preservation. A low DPS means the representation is not linearly accessible, though it may still be preserved non-linearly.
+### 5.3 Complexity Comparison
+
+| Variant | Memory per Token | Compute per Sublayer |
+|---|---|---|
+| BlockAttnRes (block size B) | O(B · d) | O(B · d) |
+| FullAttnRes | O(2L · d) | O(L · d) |
 
 ---
 
-### 8.2 Gradient Preservation Score (GPS) & Gradient Preservation Index (GPI)
+## 6. Summary Comparison
 
-DPS measures whether *all* early layer information is preserved. However, a healthy deep network should abstract away low-level features. The **Gradient Preservation Score (GPS)** measures whether the *task-relevant* subspace of the early layer is preserved.
-
-If we apply the LM head directly to the early representation $\mathbf{a}_k$, we obtain early logits and an early loss. The gradient of this early loss points in the direction that would most improve the prediction at layer $k$. If this corrective task direction is recoverable from the final state $\mathbf{s}$, the final state still carries the task-relevant information.
-
-For each token $i$, the implicit early gradient $\mathbf{g}_k^{(i)}$ is defined as:
-
-$$
-\mathbf{g}_k^{(i)} = \mathbf{W}_{\text{head}}^\top (\text{softmax}(\mathbf{a}_k^{(i)} \mathbf{W}_{\text{head}}) - \mathbf{y}^{(i)}) \in \mathbb{R}^d
-$$
-
-where $\mathbf{W}_{\text{head}} \in \mathbb{R}^{d \times V}$ are the LM head weights, and $\mathbf{y}^{(i)}$ is the one-hot target token label.
-
-Using closed-form Ridge Regression ($\lambda = 1.0$), we solve for the mapping $(\mathbf{W}_g, \mathbf{b}_g)$ to reconstruct $\mathbf{g}_k$ from $\mathbf{s}$:
-
-$$
-\mathrm{GPS}(k) = 1 - \frac{\sum_{i=1}^N \|\mathbf{g}_k^{(i)} - (\mathbf{W}_g \mathbf{s}^{(i)} + \mathbf{b}_g)\|^2}{\sum_{i=1}^N \|\mathbf{g}_k^{(i)} - \bar{\mathbf{g}}_k\|^2}
-$$
-
-The **Gradient Preservation Index (GPI)** is the average GPS over the first half of the network:
-
-$$
-\mathrm{GPI} = \frac{1}{\lfloor L/2 \rfloor} \sum_{k=1}^{\lfloor L/2 \rfloor} \mathrm{GPS}(k)
-$$
+| Property | Standard | RR | VEGA | AttnRes (Block) |
+|---|---|---|---|---|
+| **Mechanism** | Fixed addition | Gated recurrency | Multi-scale EMA | Softmax over blocks |
+| **Complexity / sublayer** | O(d) | O(rank · d) | O(rank · d) | O(B · d) |
+| **Memory / token** | O(d) | O(2d) | O(n_heads · rank²) | O(B · d) |
+| **Softmax over depth** | No | No | No | Yes |
+| **New hyperparameters** | None | 0 (bias values) | rank, n_heads | block_size |
+| **Zero-start compliant** | N/A | Yes | Yes | Yes |
 
 ---
 
-### 8.3 The Golden Pairing Rule
+## 7. Evaluation Metrics
 
-Neither metric is sufficient on its own. We evaluate architectures using the triple index **(DRI, GPI, Perplexity)**:
+### 7.1 Depth Preservation Score (DPS) and Dilution Resistance Index (DRI)
 
-| DRI | GPI | Perplexity vs. Baseline | Interpretation |
-| :--- | :--- | :--- | :--- |
-| High | High | Better or Equal | **Successful preservation**: Task-relevant information is preserved linearly, leading to equal or improved performance. |
-| High | Low | Better or Equal | **Healthy abstraction**: The model discards task-irrelevant raw details in later layers in favor of higher-level semantic features. |
-| High | Low | Worse | **Cluttering**: The residual mechanism forces the model to retain raw features that clutter the representation and harm task performance. |
-| Low | Low | Worse | **Classic dilution**: Crucial early-layer information is diluted and lost, leading to degraded performance. |
-| Low | High | - | **Targeted preservation**: The raw representation is heavily transformed/compressed, but the specific task-relevant gradient direction remains linearly readable. |
+**DPS(k)** measures how linearly accessible layer $k$'s representation is from the final hidden state $\mathbf{s}$. A Ridge regression probe (λ = 1) is fit from $\mathbf{s}$ to each normalized intermediate activation $\mathbf{a}_k$:
+
+$$\text{DPS}(k) = 1 - \frac{\sum_i \|\mathbf{a}_k^{(i)} - (\mathbf{W} \mathbf{s}^{(i)} + \mathbf{b})\|^2}{\sum_i \|\mathbf{a}_k^{(i)} - \bar{\mathbf{a}}_k\|^2}$$
+
+**DRI** averages DPS over the early half of the network (layers 1 to ⌊L/2⌋), summarizing overall resistance to information dilution.
+
+### 7.2 Gradient Preservation Score (GPS) and Gradient Preservation Index (GPI)
+
+**GPS(k)** measures whether the task-relevant direction at layer $k$ is still recoverable from the final state. The implicit early gradient is:
+
+$$\mathbf{g}_k^{(i)} = \mathbf{W}_\text{head}^\top (\text{softmax}(\mathbf{a}_k^{(i)} \mathbf{W}_\text{head}) - \mathbf{y}^{(i)})$$
+
+A Ridge regression probe is fit from $\mathbf{s}$ to $\mathbf{g}_k$, and GPS is the resulting $R^2$ score. **GPI** is the average GPS over the first half of the network.
+
+### 7.3 Interpretation
+
+| DRI | GPI | Perplexity | Interpretation |
+|---|---|---|---|
+| High | High | Better or equal | Successful preservation |
+| High | Low | Better or equal | Healthy abstraction (model discards task-irrelevant detail) |
+| High | Low | Worse | Cluttering (model forced to retain irrelevant features) |
+| Low | Low | Worse | Classic dilution |
+| Low | High | Any | Targeted preservation (raw signal compressed but task direction retained) |
 
 ---
 
-## 9. Conclusion
+## 8. Conclusion
 
-Each residual mechanism studied here makes a distinct trade-off between expressivity, memory cost, and stability. Standard residuals are a free baseline. Attention Residuals offer selective random-access depth retrieval at $O(Ld)$ cost. Recurrent Residuals provide $O(d)$ persistent working memory with provably bounded norms. VEGA combines both local exactness and long-range covariance retrieval at $O(Wd + rd)$ cost, bridging the gap between the two extremes. The shared evaluation framework—DRI, GPI, and perplexity—provides a principled lens for comparing these designs on both information-preservation and downstream language-model quality.
+This project compares four points in the design space of depth-stream residuals:
+
+- **Standard** residuals are the free baseline — passive accumulation, no overhead.
+- **RR** provides $O(\text{rank} \cdot d)$ gated working memory with zero-start compliant initialization and provably bounded norms.
+- **VEGA** provides multi-scale EMA depth memory; fast/slow head partitioning lets the model separately track local and long-range depth context.
+- **BlockAttnRes** (Moonshot AI) provides softmax-based selective retrieval over block history at $O(B \cdot d)$ cost per sublayer.
+
+All three alternatives share a common zero-start protocol: at initialization they reduce to standard Pre-LN transformers, ensuring training stability while allowing gradual specialization.

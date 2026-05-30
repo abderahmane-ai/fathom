@@ -16,20 +16,23 @@ model:
   dropout: 0.1
   recurrent_residual:
     read_gate_bias: -3.0
+    forget_gate_bias: 3.0
     update_gate_bias: -2.0
+    damp_gate_bias: 3.0
     gate_init_std: 0.01
     memory_gain_init: 0.0
     eps: 1.0e-5
   vega:
-    window_size: 8
     rank: 16
     n_heads: 4
-    decay_bias_init: 3.0
+    n_fast_heads: 2
     read_gate_bias: -3.0
+    write_gate_bias: -2.0
+    damp_gate_bias: 3.0
     gate_init_std: 0.01
     eps: 1.0e-5
   attnres_block:
-    block_size: 2  # 12 layers × 2 sublayers / 2 = 12 blocks → paper recommends ~8
+    block_size: 2  # 24 layers × 2 sublayers / 2 = 24 blocks
 
 data:
   dataset_name: roneneldan/TinyStories
@@ -44,9 +47,28 @@ data:
   val_split: validation[:1%]
   test_split: validation[:1%]
 
+trainer:
+  precision: bf16-mixed
+  accelerator: gpu
+  devices: 1
+  strategy: auto
+  max_epochs: -1
+  matmul_precision: high
+  gradient_clip_val: 1.0
+  scheduler:
+    warmup_steps: 200
+    min_lr_ratio: 0.1
+  optimizer:
+    lr: 5.0e-4
+    weight_decay: 0.1
+    betas: [0.9, 0.95]
+
 benchmark:
   task: dps
   n_tokens: 100000
   lambda_val: 1.0
-  target_layer_idx: 1
   final_norm_name: ln_f
+
+wandb:
+  enabled: false
+  project: recurrent-residuals

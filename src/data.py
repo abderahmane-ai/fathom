@@ -222,7 +222,10 @@ class DeepNeedleDataset(IterableDataset):
 
         count = 0
         while self.n_samples is None or count < self.n_samples:
-            payload = torch.randint(1, self.vocab_size - 1, (1,), generator=rng).item()
+            # Payload is any token that is not a reserved marker.
+            # Reserved: blank_token (0), start_token (1), output_token (vocab_size-1 = 63).
+            # Safe payload range: [2, vocab_size-2] which excludes all three markers.
+            payload = torch.randint(2, self.vocab_size - 1, (1,), generator=rng).item()
 
             tokens = torch.full((self.seq_len,), self.blank_token, dtype=torch.long)
             tokens[0] = self.start_token

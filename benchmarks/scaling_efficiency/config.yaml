@@ -16,20 +16,23 @@ model:
   dropout: 0.1
   recurrent_residual:
     read_gate_bias: -3.0
+    forget_gate_bias: 3.0
     update_gate_bias: -2.0
+    damp_gate_bias: 3.0
     gate_init_std: 0.01
     memory_gain_init: 0.0
     eps: 1.0e-5
   vega:
-    window_size: 8
     rank: 16
     n_heads: 4
-    decay_bias_init: 3.0
+    n_fast_heads: 2
     read_gate_bias: -3.0
+    write_gate_bias: -2.0
+    damp_gate_bias: 3.0
     gate_init_std: 0.01
     eps: 1.0e-5
   attnres_block:
-    block_size: 2  # 8 layers → 8 blocks, 6 layers → 6 blocks, 4 layers → 4 blocks
+    block_size: 2  # each layer is its own block
 
 sweep:
   - d_model: 384

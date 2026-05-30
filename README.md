@@ -1,80 +1,164 @@
-# Recurrent Residuals & Attention Residuals for Transformers
+# Recurrent Residuals, VEGA, and Attention Residuals
 
-This repository implements and compares two novel transformer residual mechanisms designed to overcome the "information dilution" problem in very deep networks.
+A controlled comparison of three depth-stream residual mechanisms for causal transformer language models.
 
-## Overview
+## What Is Being Compared
 
-Standard Transformer residual connections ($h = h + y$) can dilute early-layer
-signals as depth increases. This project compares three residual mechanisms:
+Standard transformer residuals (`h = h + y`) accumulate every layer's output with equal weight, which dilutes early-layer signals in deep networks. This project benchmarks three alternatives against the standard baseline:
 
-1.  **Recurrent Residuals (RR)**: Treats the depth dimension as a recurrent process. A persistent "working memory" state $m$ flows across layers, updated by gated read/write mechanisms.
-2.  **Attention Residuals (AttnRes)**: Based on the Moonshot AI paper (arXiv:2603.15031). Uses softmax attention over previous "blocks" of layers to selectively aggregate information.
-3.  **VEGA**: Vertical EMA Gated Attention. Combines multi-scale depth memory with two explicit timescale groups (fast / slow) implemented as head partitions within a single linear-attention EMA state to retain context across depth.
+| Mechanism | Core Idea | Complexity per Layer |
+|---|---|---|
+| **Standard** | `h = h + y` | O(d) |
+| **Recurrent Residuals (RR)** | Gated depth-wise working memory shared across all layers | O(rank · d) |
+| **VEGA** | Multi-scale EMA depth memory with fast/slow head partition | O(rank · d) |
+| **Attention Residuals (AttnRes)** | Softmax aggregation over previous block states; [Moonshot AI, arXiv:2603.15031](https://arxiv.org/abs/2603.15031) | O(B · d) per block |
 
-RR is implemented as a standard Pre-LN residual addition plus a diagonal gated
-memory path. Block AttnRes is implemented as the practical Attention Residuals
-baseline from the Moonshot AI paper.
+Full mathematical derivations for each mechanism are in [METHODOLOGY.md](METHODOLOGY.md).
 
 ## Installation
 
 ```bash
-# Clone the repository
 git clone https://github.com/your-repo/recurrent-residuals.git
 cd recurrent-residuals
 
-# Install dependencies (requires Python 3.10+)
+# Core library
 pip install .
+
+# Development tools (pytest, ruff, pyrefly)
+pip install ".[dev]"
+
+# Benchmark runners (modal, wandb)
+pip install ".[benchmarks]"
 ```
 
-## Training
+Requires Python ≥ 3.10 and PyTorch ≥ 2.2.
 
-We use **PyTorch Lightning** and **Hydra** for experiment management.
+## Quick Start
 
 ```bash
-# Train standard residual baseline
+# Standard baseline
 python src/train.py model=standard
 
-# Train with Recurrent Residuals (Shared Memory)
+# Recurrent Residuals
 python src/train.py model=recurrent_residual
 
-# Train with Sliding-Window Depth Attention with Low-Rank History
+# VEGA
 python src/train.py model=vega
 
-# Train with Block Attention Residuals
+# Block Attention Residuals (Moonshot AI)
 python src/train.py model=attnres
+
+# Override any parameter
+python src/train.py model.d_model=512 trainer.precision=bf16-mixed
 ```
 
-### Configuration Overrides
-You can override any parameter via the CLI:
+## Benchmarks
+
+Four evaluation tasks are available via Modal. Each task runs all four modes in parallel on A100 GPUs.
+
+| Benchmark | Task | Metric |
+|---|---|---|
+| `lm_quality` | TinyStories language modelling | Validation perplexity |
+| `depth_preservation` | Linear probing of intermediate layers | DRI, GPI |
+| `scaling_efficiency` | Pareto frontier across model sizes | Val perplexity vs. parameters |
+| `depth_needle` | Synthetic token-retrieval at depth | Accuracy |
+
 ```bash
-python src/train.py model.d_model=512 trainer.precision=bf16-mixed
+# Run a benchmark (requires modal auth)
+modal run benchmarks/lm_quality/modal_lm_quality.py
+modal run benchmarks/depth_preservation/modal_dps.py
+modal run benchmarks/depth_needle/modal_depth_needle.py
 ```
 
 ## Testing
 
-Run the unit and integration test suite:
 ```bash
 export PYTHONPATH=$PYTHONPATH:.
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/
+pytest tests/
 ```
 
-## Methodology
+## Residual Mechanisms — Key Equations
 
-For a deep dive into the mathematics of each residual mechanism, see [METHODOLOGY.md](METHODOLOGY.md).
+### Recurrent Residuals (RR)
 
-### Key Equations (RR)
-- **Read**: $h_l = h_{l-1} + y_l + r_l \odot (g_m \odot \text{RMSNorm}(m_{l-1}))$
-- **Update**: $m_l = u_l \odot y_l + (1 - u_l) \odot m_{l-1}$
+```
+read_gate  = σ(read_proj(y)  + depth_bias[pos])
+damp_gate  = σ(damp_proj(y)  + depth_bias[pos])
+forget_gate= σ(forget_proj(RMSNorm(m)) + depth_bias[pos])
+update_gate= σ(update_proj(y) + depth_bias[pos])
+
+h_new = damp_gate * h_prev + y + read_gate * (memory_gain * memory_out(RMSNorm(m)))
+m_new = forget_gate * m + update_gate * y
+```
+
+All gate weights are low-rank (d → rank → d). All gates start near their identity value (zero-start compliant).
+
+### VEGA
+
+```
+K = key_proj(y),  V = val_proj(y),  Q = query_proj(y)
+φ(x) = ELU(x) + 1
+
+c_fast/slow = φ(Q_dep) S_prev / (φ(Q_dep) z_prev + ε)   [split by head group]
+
+h_new = σ(damp) * h_prev + y + r_fast * c_out_fast + r_slow * c_out_slow
+
+S_new = σ(decay) * S_prev + φ(K_dep) ⊗ (write_gate * V)
+z_new = σ(decay) * z_prev + φ(K_dep)
+```
+
+Fast heads track short depth horizons; slow heads track long depth horizons.
+
+### Block Attention Residuals (AttnRes — Moonshot AI)
+
+```
+values  = stack([*block_history, current_block])
+logits  = pseudo_query · RMSNorm(values)      [per position, over depth axis]
+weights = softmax(logits)
+h_new   = sum(weights * values)
+```
+
+`pseudo_query` starts at zero → uniform aggregation → degrades to a mean residual.
+
+## Project Structure
+
+```
+src/
+  modules/
+    norm.py              # RMSNorm (single authoritative implementation)
+    attention.py         # Multi-head causal self-attention with RoPE
+    ffn.py               # SwiGLU feed-forward network
+    recurrent_residual.py # RR gated depth-memory cell
+    vega.py              # VEGA multi-scale EMA cell
+    attnres_block.py     # BlockAttnRes and FullAttnRes
+    transformer_layer.py # Universal layer (all modes)
+    transformer.py       # TransformerDecoder with weight-tied LM head
+  data.py
+  train.py
+benchmarks/
+  common/               # Lightning engine, artifact management, metrics
+  lm_quality/
+  depth_preservation/
+  depth_needle/
+  scaling_efficiency/
+conf/                   # Hydra YAML configs
+tests/
+```
 
 ## Citation
 
-If you use this code in your research, please cite:
 ```bibtex
 @misc{recurrent-residuals2026,
-  author = {Abdou Magico},
-  title = {Recurrent Residuals for Deep Transformers},
-  year = {2026},
+  author    = {Abdou Magico},
+  title     = {Recurrent Residuals, VEGA, and Attention Residuals for Deep Transformers},
+  year      = {2026},
   publisher = {GitHub},
-  journal = {GitHub repository}
+}
+
+@misc{kimi2025attnres,
+  title  = {Attention Residuals},
+  author = {Kimi Team / Moonshot AI},
+  year   = {2025},
+  url    = {https://arxiv.org/abs/2603.15031},
 }
 ```

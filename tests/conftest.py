@@ -17,7 +17,7 @@ def seed() -> None:
 
 @pytest.fixture
 def device() -> torch.device:
-    """Return CPU device (tests run on CPU; GPU is optional)."""
+    """CPU device (tests run on CPU; GPU is optional)."""
     return torch.device("cpu")
 
 
@@ -59,7 +59,7 @@ def num_layers() -> int:
 
 @pytest.fixture
 def standard_cfg(d_model, n_heads, ff_dim, num_layers):
-    """Minimal OmegaConf config for standard residual mode."""
+    """Minimal config for standard residual mode."""
     return OmegaConf.create(
         {
             "d_model": d_model,
@@ -76,7 +76,7 @@ def standard_cfg(d_model, n_heads, ff_dim, num_layers):
 
 @pytest.fixture
 def attnres_cfg(d_model, n_heads, ff_dim, num_layers):
-    """Minimal OmegaConf config for block_attnres mode with 2 layers per block."""
+    """Minimal config for block_attnres mode with 2 layers per block."""
     return OmegaConf.create(
         {
             "d_model": d_model,
@@ -94,7 +94,7 @@ def attnres_cfg(d_model, n_heads, ff_dim, num_layers):
 
 @pytest.fixture
 def rr_cfg(d_model, n_heads, ff_dim, num_layers):
-    """Minimal OmegaConf config for recurrent_residual mode."""
+    """Minimal config for recurrent_residual mode."""
     return OmegaConf.create(
         {
             "d_model": d_model,
@@ -109,6 +109,7 @@ def rr_cfg(d_model, n_heads, ff_dim, num_layers):
                 "read_gate_bias": -3.0,
                 "forget_gate_bias": 3.0,
                 "update_gate_bias": -2.0,
+                "damp_gate_bias": 3.0,
                 "gate_init_std": 0.01,
                 "memory_gain_init": 0.0,
                 "eps": 1e-5,
@@ -119,9 +120,9 @@ def rr_cfg(d_model, n_heads, ff_dim, num_layers):
 
 @pytest.fixture
 def vega_cfg(d_model, n_heads, ff_dim, num_layers):
-    """Minimal OmegaConf config for vega mode.
+    """Minimal config for vega mode.
 
-    Uses rank=8 (divisible by n_heads=4) and v_dim defaults to d_model.
+    rank=8 is divisible by n_heads=4; n_fast_heads=2 gives an equal fast/slow split.
     """
     return OmegaConf.create(
         {
@@ -134,12 +135,12 @@ def vega_cfg(d_model, n_heads, ff_dim, num_layers):
             "dropout": 0.0,
             "residual_mode": "vega",
             "vega": {
-                "window_size": 4,
                 "rank": 8,
                 "n_heads": 4,
-                "decay_bias_init": 3.0,
+                "n_fast_heads": 2,
                 "read_gate_bias": -3.0,
                 "write_gate_bias": -2.0,
+                "damp_gate_bias": 3.0,
                 "gate_init_std": 0.01,
                 "eps": 1e-5,
             },

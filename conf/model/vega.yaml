@@ -1,14 +1,15 @@
-# conf/model/vega.yaml — Sliding-Window Depth Attention with Low-Rank History residual transformer
+# conf/model/vega.yaml — VEGA depth-memory transformer
 # @package model
 
 residual_mode: vega
 
 vega:
-  window_size: 8
-  rank: 16
-  n_heads: 4
-  decay_bias_init: 3.0
-  read_gate_bias: -3.0
+  rank: 16            # total EMA rank (must be divisible by n_heads)
+  n_heads: 4          # total EMA heads
+  n_fast_heads: 2     # heads assigned to the fast (short-horizon) decay group
+  read_gate_bias: -3.0  # initial bias for both r_fast and r_slow (closed at start)
+  write_gate_bias: -2.0 # initial bias for the write gate
+  damp_gate_bias: 3.0   # initial value for the damp gate bias
   gate_init_std: 0.01
   eps: 1e-5
 

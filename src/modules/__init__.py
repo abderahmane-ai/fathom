@@ -1,17 +1,13 @@
-"""Public API for the ``src.modules`` package.
-
-Import any module component from here::
-
-    
-"""
+"""Public API for the ``src.modules`` package."""
 
 from .attention import Attention
 from .attnres_block import BlockAttnRes, FullAttnRes
 from .ffn import FeedForward
+from .norm import RMSNorm
 from .recurrent_residual import RecurrentResidualCell
-from .vega import VEGACell
 from .transformer import TransformerDecoder
 from .transformer_layer import TransformerLayer
+from .vega import VEGACell
 
 __all__ = [
     "Attention",
@@ -19,7 +15,8 @@ __all__ = [
     "FeedForward",
     "FullAttnRes",
     "RecurrentResidualCell",
-    "VEGACell",
+    "RMSNorm",
     "TransformerDecoder",
     "TransformerLayer",
+    "VEGACell",
 ]

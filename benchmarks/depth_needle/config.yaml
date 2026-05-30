@@ -17,29 +17,33 @@ model:
   dropout: 0.0
   recurrent_residual:
     read_gate_bias: -3.0
+    forget_gate_bias: 3.0
     update_gate_bias: -2.0
+    damp_gate_bias: 3.0
     gate_init_std: 0.01
     memory_gain_init: 0.0
     eps: 1.0e-5
   vega:
-    window_size: 8
     rank: 16
     n_heads: 4
-    decay_bias_init: 3.0
+    n_fast_heads: 2
     read_gate_bias: -3.0
+    write_gate_bias: -2.0
+    damp_gate_bias: 3.0
     gate_init_std: 0.01
     eps: 1.0e-5
   attnres_block:
-    block_size: 2  # 12 layers × 2 sublayers / 2 = 12 blocks → paper recommends ~8
+    block_size: 2  # 12 layers → 12 blocks
   full_attnres:
     max_layers: 24
 
 data:
   max_seq_len: 512
   vocab_size: 64
-  start_token: 0
-  blank_token: 0
-  output_token: 63
+  start_token: 1    # position 0 marker — must differ from blank_token (0) and output_token (63)
+  blank_token: 0    # filler for all non-special positions
+  output_token: 63  # position seq_len-1 marker that triggers the model to emit the payload
+  # payload tokens are sampled from [2, 62] — strictly distinct from all three markers above
   batch_size: 64
   num_workers: 2
   n_eval: 1000

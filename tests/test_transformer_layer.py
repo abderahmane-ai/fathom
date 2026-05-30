@@ -1,9 +1,12 @@
+"""Unit tests for TransformerLayer (src/modules/transformer_layer.py)."""
+
 import pytest
 import torch
-from src.modules.recurrent_residual import RecurrentResidualCell
-from src.modules.vega import VEGACell
-from src.modules.transformer_layer import TransformerLayer
 from omegaconf import OmegaConf
+
+from src.modules.recurrent_residual import RecurrentResidualCell
+from src.modules.transformer_layer import TransformerLayer
+
 
 @pytest.fixture
 def config():
@@ -25,30 +28,43 @@ def config():
         }
     })
 
+
 def test_grad_flows_through_rr_path(config):
+    """Gradients must flow back to x and all gate projection weights."""
     B, S, d_model = 2, 4, config.d_model
     layer = TransformerLayer(config)
-    
+
     x = torch.randn(B, S, d_model, requires_grad=True)
     m = layer.rr_cell.get_initial_state(B, S, device=x.device)
-    
+
     h_new, _ = layer(x, layer_idx=0, m=m)
     h_new.sum().backward()
-    
+
     assert x.grad is not None
-    # RR v2 uses read_proj, forget_proj, etc.
     assert layer.rr_cell.read_proj[0].weight.grad is not None
     assert layer.rr_cell.update_proj[0].weight.grad is not None
 
+
 def test_forward_with_memory_flow(config):
+    """forward() must return (h_out, m_out) with correct shapes."""
     B, S, d_model = 2, 4, config.d_model
     layer = TransformerLayer(config)
-    
+
     x = torch.randn(B, S, d_model)
     m_in = layer.rr_cell.get_initial_state(B, S, device=x.device)
-    
+
     h_out, m_out = layer(x, layer_idx=0, m=m_in)
-    
+
     assert h_out.shape == (B, S, d_model)
     assert m_out is not None
     assert m_out.shape == (B, S, d_model)
+
+
+def test_forward_raises_for_attnres_modes(config):
+    """forward() must raise ValueError when called in block_attnres or full_attnres mode."""
+    config.residual_mode = "block_attnres"
+    config.attnres_block = {"block_size": 2}
+    layer = TransformerLayer(config)
+    x = torch.randn(2, 4, config.d_model)
+    with pytest.raises(ValueError):
+        layer(x, layer_idx=0)
