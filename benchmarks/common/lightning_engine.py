@@ -326,6 +326,9 @@ def run_benchmark(cfg: DictConfig, benchmark_name: str, residual_mode: str, run_
 
     datamodule = build_datamodule(cfg)
     module = BenchmarkModule(cfg.model, cfg.trainer)
+    if bool(cfg.get("compile", False)):
+        log.info("Compiling model using torch.compile...")
+        module.model = torch.compile(module.model)
     batch_size = int(cfg.data.batch_size)
     seq_len = int(cfg.data.max_seq_len)
     tokens_per_step = batch_size * seq_len

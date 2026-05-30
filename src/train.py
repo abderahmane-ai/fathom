@@ -163,6 +163,9 @@ def main(cfg: DictConfig) -> None:
     log.info("Training Configuration:\n%s", OmegaConf.to_yaml(cfg))
 
     model = LanguageModel(cfg.model, cfg.trainer)
+    if bool(cfg.get("compile", False)):
+        log.info("Compiling model using torch.compile...")
+        model.model = torch.compile(model.model)
     datamodule = LanguageModelDataModule(cfg.data)
 
     callbacks = [

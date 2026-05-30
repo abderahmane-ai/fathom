@@ -86,15 +86,12 @@ class VEGACell(nn.Module):
         self.eps          = eps
 
         # Projections into the rank-dimensional EMA space.
-        # Naming follows the linear-attention convention: K (key), V (value), Q (query).
-        self.key_proj   = nn.Linear(d_model, rank, bias=False)
-        self.val_proj   = nn.Linear(d_model, rank, bias=False)
-        self.query_proj = nn.Linear(d_model, rank, bias=False)
+        # Fused Q, K, V projection to reduce GPU kernel launch overhead.
+        self.qkv_proj   = nn.Linear(d_model, 3 * rank, bias=False)
         self.write_gate = nn.Linear(d_model, rank, bias=True)
 
-        # Per-timescale read gates and output projections.
-        self.read_fast = nn.Linear(d_model, d_model, bias=True)
-        self.read_slow = nn.Linear(d_model, d_model, bias=True)
+        # Fused read gates to reduce GPU kernel launch overhead.
+        self.read_proj = nn.Linear(d_model, 2 * d_model, bias=True)
 
         # Element-wise damp gate: σ(damp_weight ⊙ y + damp_bias).
         self.damp_weight = nn.Parameter(torch.empty(d_model))
@@ -122,25 +119,32 @@ class VEGACell(nn.Module):
                 self.decay[pos, n_fast_heads:]  = slow_logits.view(n_slow_heads,  self.r_head)
 
         # Orthogonal init for the EMA projections — improves conditioning of the state.
-        nn.init.orthogonal_(self.key_proj.weight)
-        nn.init.orthogonal_(self.val_proj.weight)
-        nn.init.orthogonal_(self.query_proj.weight)
+        with torch.no_grad():
+            q_init = torch.empty(rank, d_model)
+            k_init = torch.empty(rank, d_model)
+            v_init = torch.empty(rank, d_model)
+            nn.init.orthogonal_(q_init)
+            nn.init.orthogonal_(k_init)
+            nn.init.orthogonal_(v_init)
+            self.qkv_proj.weight.copy_(torch.cat([q_init, k_init, v_init], dim=0))
 
         # Gate inits: tiny weights so biases dominate at the start.
         nn.init.normal_(self.write_gate.weight, 0.0, gate_init_std)
         self.write_gate.bias.data.fill_(write_gate_bias)
 
-        nn.init.normal_(self.read_fast.weight, 0.0, gate_init_std)
-        self.read_fast.bias.data.fill_(read_gate_bias)
-
-        nn.init.normal_(self.read_slow.weight, 0.0, gate_init_std)
-        self.read_slow.bias.data.fill_(read_gate_bias)
+        nn.init.normal_(self.read_proj.weight, 0.0, gate_init_std)
+        self.read_proj.bias.data.fill_(read_gate_bias)
 
         nn.init.normal_(self.damp_weight, 0.0, gate_init_std)
 
         # Zero-init output projections so the cell starts as a standard residual.
         nn.init.zeros_(self.out_fast.weight)
         nn.init.zeros_(self.out_slow.weight)
+
+    @property
+    def key_proj(self) -> nn.Linear:
+        """Alias for qkv_proj (kept for device lookup in tests)."""
+        return self.qkv_proj
 
     def get_initial_state(
         self, B: int, S: int, device: torch.device
@@ -184,9 +188,12 @@ class VEGACell(nn.Module):
         B, Seq, _ = y.shape
 
         # Project into the EMA space.
-        K = self.key_proj(y).view(B, Seq, self.n_heads, self.r_head)    # keys
-        V = self.val_proj(y).view(B, Seq, self.n_heads, self.r_head)    # values
-        Q = self.query_proj(y).view(B, Seq, self.n_heads, self.r_head)  # queries
+        qkv = self.qkv_proj(y)
+        Q, K, V = qkv.chunk(3, dim=-1)
+
+        K = K.view(B, Seq, self.n_heads, self.r_head)
+        V = V.view(B, Seq, self.n_heads, self.r_head)
+        Q = Q.view(B, Seq, self.n_heads, self.r_head)
         g = torch.sigmoid(self.write_gate(y)).view(B, Seq, self.n_heads, self.r_head)
 
         # Add per-sublayer depth biases.
@@ -209,8 +216,10 @@ class VEGACell(nn.Module):
         c_out_slow = self.out_slow(self.norm_slow(c_slow))
 
         # Separate read gates per timescale — the key distinction from a single gate.
-        r_fast = torch.sigmoid(self.read_fast(y))
-        r_slow = torch.sigmoid(self.read_slow(y))
+        read_gates = self.read_proj(y)
+        r_fast, r_slow = read_gates.chunk(2, dim=-1)
+        r_fast = torch.sigmoid(r_fast)
+        r_slow = torch.sigmoid(r_slow)
         damp   = torch.sigmoid(self.damp_weight * y + self.damp_bias)
 
         h_new = damp * h_prev + y + r_fast * c_out_fast + r_slow * c_out_slow
