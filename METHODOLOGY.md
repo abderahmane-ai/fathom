@@ -112,7 +112,18 @@ where $g = \sigma(\mathbf{W}_g \mathbf{y})$ is a write gate that controls how mu
 - Output projections $\mathbf{W}_\text{out\_fast}$, $\mathbf{W}_\text{out\_slow}$ zero-initialized → zero-start compliant.
 - Key, value, query projections initialized orthogonally for conditioning.
 
+### 4.6 Implementation Optimizations
+
+To maximize training throughput and prevent GPU kernel launch latency bottlenecks:
+- **Projection Fusion**: $\mathbf{Q}$, $\mathbf{K}$, and $\mathbf{V}$ projections are fused into a single combined projection layer:
+  $$\begin{bmatrix} \mathbf{Q} \\ \mathbf{K} \\ \mathbf{V} \end{bmatrix} = \mathbf{W}_{qkv} \mathbf{y}$$
+  and chunked back to independent streams in memory.
+- **Read Gate Fusion**: Fast and slow read gates are projected in parallel:
+  $$\begin{bmatrix} \text{logits}_\text{fast} \\ \text{logits}_\text{slow} \end{bmatrix} = \text{chunk}\left(\mathbf{W}_{read} \mathbf{y}\right)$$
+- **Kernel Fusion**: Using `torch.compile` allows PyTorch to dynamically compile and fuse element-wise operations (such as Sigmoid, ELU, and scaling updates) into a single combined CUDA kernel per sublayer, bypassing dispatch latency.
+
 ---
+
 
 ## 5. Attention Residuals (AttnRes) — Moonshot AI
 
