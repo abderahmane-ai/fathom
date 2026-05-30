@@ -142,3 +142,22 @@ class TestFullAttnRes:
         module = FullAttnRes(d_model)
         with pytest.raises(ValueError, match="must not be empty"):
             module([])
+
+
+class TestBlockAttnResLogitScaling:
+    def test_logit_scaling_prevents_saturation(self, B, S, d_model):
+        """Softmax entropy remains healthy under large scale outputs due to logit scaling."""
+        module = BlockAttnRes(d_model)
+        block0 = torch.randn(B, S, d_model) * 5.0
+        partial = torch.randn(B, S, d_model) * 5.0
+        module.pseudo_query.data.fill_(10.0)
+
+        values = torch.stack([block0, partial], dim=0)
+        keys = module._rms_norm(values)
+        logits = torch.einsum(
+            "d, n b s d -> n b s", module.pseudo_query, keys
+        ) / (d_model ** 0.5)
+        weights = logits.softmax(dim=0)
+
+        entropy = -torch.sum(weights * torch.log(weights + 1e-12), dim=0).mean().item()
+        assert entropy > 0.05

@@ -71,3 +71,16 @@ class TestVEGACellForward:
         h_new, _ = cell(h_prev, y, m, layer_idx=0, sublayer=0)
         h_new.sum().backward()
         assert y.grad is not None
+
+
+class TestVEGACellStability:
+    def test_query_key_normalization_bounds(self, cell, B, S, d_model):
+        """Under extreme inputs, QK scaling and normalization prevents state explosion."""
+        m = cell.get_initial_state(B, S, device=cell.key_proj.weight.device)
+        h_prev = torch.randn(B, S, d_model)
+        y_large = torch.randn(B, S, d_model) * 100.0
+        h_new, (S_new, z_new) = cell(h_prev, y_large, m, layer_idx=0, sublayer=0)
+        assert not torch.isnan(S_new).any()
+        assert not torch.isnan(z_new).any()
+        assert not torch.isinf(S_new).any()
+        assert not torch.isinf(z_new).any()

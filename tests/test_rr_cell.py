@@ -78,3 +78,13 @@ class TestRRCellGradients:
         assert h_prev.grad is not None
         assert y.grad is not None
         assert cell.read_proj[0].weight.grad is not None
+
+
+class TestRRCellStability:
+    def test_memory_state_bounding(self, cell, B, S, d_model):
+        """Under large input values, tanh bounding prevents state explosion."""
+        m = cell.get_initial_state(B, S, device=cell.read_proj[0].weight.device)
+        h_prev = torch.randn(B, S, d_model)
+        y_large = torch.randn(B, S, d_model) * 100.0
+        _, m_after = cell(h_prev, y_large, m, layer_idx=0, sublayer=0)
+        assert m_after.abs().max().item() <= 1.0 + cell.eps
