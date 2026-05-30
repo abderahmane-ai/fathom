@@ -5,15 +5,16 @@ that flows across all layers.  The memory is shared (weight-tied) across every
 layer, so the total parameter overhead is O(d) regardless of depth.
 
 Math (per sublayer):
-    read_gate  = σ(read_proj(y)  + depth_read_bias[pos])
-    damp_gate  = σ(damp_proj(y)  + depth_damp_bias[pos])
-    forget_gate= σ(forget_proj(LayerNorm(m)) + depth_forget_bias[pos])
-    update_gate= σ(update_proj(y) + depth_update_bias[pos])
+    y_norm = RMSNorm(y)
+    read_gate  = σ(read_proj(y_norm)  + depth_read_bias[pos])
+    damp_gate  = σ(damp_proj(y_norm)  + depth_damp_bias[pos])
+    forget_gate= σ(forget_proj(RMSNorm(m)) + depth_forget_bias[pos])
+    update_gate= σ(update_proj(y_norm) + depth_update_bias[pos])
 
-    memory_read = memory_gain * memory_out(LayerNorm(m))
+    memory_read = memory_gain * memory_out(RMSNorm(m))
 
     h_new = damp_gate * h_prev + y + read_gate * memory_read
-    m_new = forget_gate * m    + update_gate * y
+    m_new = forget_gate * m    + update_gate * tanh(y)
 """
 
 from __future__ import annotations

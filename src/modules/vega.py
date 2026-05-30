@@ -5,10 +5,12 @@ Heads are split into fast (short depth-horizon) and slow (long depth-horizon)
 groups so the model can simultaneously track local and global depth context.
 
 Math (per sublayer at depth position pos):
-    K  = key_proj(y),   V  = val_proj(y),  Q  = query_proj(y)
-    g  = σ(write_gate(y))                       -- write gate
+    y_norm = RMSNorm(y)
+    K  = key_proj(y_norm),   V  = val_proj(y_norm),  Q  = query_proj(y_norm)
+    g  = σ(write_gate(y_norm))                  -- write gate
 
-    K_dep = K + key_bias[pos],   Q_dep = Q + query_bias[pos]
+    K_dep = RMSNorm(K + key_bias[pos]) / sqrt(r_head)
+    Q_dep = RMSNorm(Q + query_bias[pos]) / sqrt(r_head)
     φ(x)  = ELU(x) + 1                          -- positive feature map
 
     # Linear-attention retrieval from previous state
@@ -18,8 +20,8 @@ Math (per sublayer at depth position pos):
     c_out     = out_fast(norm_fast(c_fast)) + out_slow(norm_slow(c_slow))
 
     # Separate per-timescale read gates (the key architectural feature)
-    r_fast = σ(read_fast(y)),  r_slow = σ(read_slow(y))
-    damp   = σ(damp_weight * y + damp_bias)
+    r_fast = σ(read_fast(y_norm)),  r_slow = σ(read_slow(y_norm))
+    damp   = σ(damp_weight * y_norm + damp_bias)
 
     h_new = damp * h_prev + y + r_fast * c_out_fast + r_slow * c_out_slow
 
@@ -247,7 +249,7 @@ class VEGACell(nn.Module):
 
         h_new = damp * h_prev + y + r_fast * c_out_fast + r_slow * c_out_slow
 
-        # EMA state update: S_new = α S_prev + φ(K) ⊗ (g * V)
+        # EMA state update: S_new = α S_prev + φ(K_dep) ⊗ (g * V)
         decay = torch.sigmoid(self.decay[pos]).view(1, 1, self.n_heads, self.r_head)
         outer = K_phi.unsqueeze(-1) * (g * V.float()).unsqueeze(-2)
         S_new = decay.unsqueeze(-1) * S_prev + outer

@@ -10,7 +10,7 @@ small-model diagnostic reference.
 Math (BlockAttnRes):
     values  = stack([*blocks, partial_block])        # (N+1, B, S, d)
     keys    = RMSNorm(values)                        # normalized for bounded logits
-    logits  = einsum("d, nbsd -> nbs", pseudo_query, keys)
+    logits  = einsum("d, nbsd -> nbs", pseudo_query, keys) / sqrt(d)
     weights = softmax(logits, dim=0)                 # over depth axis
     output  = einsum("nbs, nbsd -> bsd", weights, values)
 
