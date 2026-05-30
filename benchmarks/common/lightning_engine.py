@@ -124,10 +124,31 @@ class BenchmarkModule(lightning.LightningModule):
         """
         opt_cfg = self.trainer_cfg.optimizer
         sch_cfg = self.trainer_cfg.scheduler
+
+        # Partition parameters to avoid applying weight decay to biases,
+        # normalization scales, decay rates, gains, damp scales, or initial states.
+        decay_params = []
+        no_decay_params = []
+        for name, p in self.named_parameters():
+            if not p.requires_grad:
+                continue
+            is_bias_or_gain_or_decay = any(
+                keyword in name
+                for keyword in ("bias", "decay", "gain", "scale", "m_init", "damp_weight")
+            )
+            if p.dim() < 2 or is_bias_or_gain_or_decay:
+                no_decay_params.append(p)
+            else:
+                decay_params.append(p)
+
+        param_groups = [
+            {"params": decay_params, "weight_decay": float(opt_cfg.weight_decay)},
+            {"params": no_decay_params, "weight_decay": 0.0},
+        ]
+
         optimizer = AdamW(
-            self.parameters(),
+            param_groups,
             lr=float(opt_cfg.lr),
-            weight_decay=float(opt_cfg.weight_decay),
             betas=tuple(opt_cfg.get("betas", [0.9, 0.95])),
             fused=False,
         )

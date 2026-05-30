@@ -89,13 +89,20 @@ class LanguageModel(L.LightningModule):
         opt_cfg = self.trainer_cfg.optimizer
         sch_cfg = self.trainer_cfg.scheduler
 
-        # Weight decay only on 2D+ tensors (kernels/weights), excluding biases and norms.
-        decay_params = [
-            p for _name, p in self.model.named_parameters() if p.requires_grad and p.dim() >= 2
-        ]
-        no_decay_params = [
-            p for _name, p in self.model.named_parameters() if p.requires_grad and p.dim() < 2
-        ]
+        # Weight decay only on 2D+ weights (kernels), excluding biases, gains, decays, and norms.
+        decay_params = []
+        no_decay_params = []
+        for name, p in self.model.named_parameters():
+            if not p.requires_grad:
+                continue
+            is_bias_or_gain_or_decay = any(
+                keyword in name
+                for keyword in ("bias", "decay", "gain", "scale", "m_init", "damp_weight")
+            )
+            if p.dim() < 2 or is_bias_or_gain_or_decay:
+                no_decay_params.append(p)
+            else:
+                decay_params.append(p)
 
         param_groups = [
             {"params": decay_params, "weight_decay": opt_cfg.weight_decay},
