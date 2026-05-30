@@ -88,7 +88,7 @@ forget_gate= σ(forget_proj(RMSNorm(m)) + depth_bias[pos])
 update_gate= σ(update_proj(y) + depth_bias[pos])
 
 h_new = damp_gate * h_prev + y + read_gate * (memory_gain * memory_out(RMSNorm(m)))
-m_new = forget_gate * m + update_gate * y
+m_new = forget_gate * m + update_gate * tanh(y)
 ```
 
 All gate weights are low-rank (d → rank → d). All gates start near their identity value (zero-start compliant).
@@ -97,6 +97,8 @@ All gate weights are low-rank (d → rank → d). All gates start near their ide
 
 ```
 K = key_proj(y),  V = val_proj(y),  Q = query_proj(y)
+K_dep = RMSNorm(K + key_bias[pos]) / sqrt(r_head)
+Q_dep = RMSNorm(Q + query_bias[pos]) / sqrt(r_head)
 φ(x) = ELU(x) + 1
 
 c_fast/slow = φ(Q_dep) S_prev / (φ(Q_dep) z_prev + ε)   [split by head group]
@@ -113,7 +115,7 @@ Fast heads track short depth horizons; slow heads track long depth horizons.
 
 ```
 values  = stack([*block_history, current_block])
-logits  = pseudo_query · RMSNorm(values)      [per position, over depth axis]
+logits  = (pseudo_query · RMSNorm(values)) / sqrt(d_model)      [per position, over depth axis]
 weights = softmax(logits)
 h_new   = sum(weights * values)
 ```

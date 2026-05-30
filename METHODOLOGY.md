@@ -40,7 +40,7 @@ $$\mathbf{f}_l = \sigma(\mathbf{W}_f \text{RMSNorm}(\mathbf{m}_{l-1}) + \mathbf{
 $$\mathbf{u}_l = \sigma(\mathbf{W}_u \mathbf{y}_l + \mathbf{p}_u[l])$$
 
 **Memory update**:
-$$\mathbf{m}_l = \mathbf{f}_l \odot \mathbf{m}_{l-1} + \mathbf{u}_l \odot \mathbf{y}_l$$
+$$\mathbf{m}_l = \mathbf{f}_l \odot \mathbf{m}_{l-1} + \mathbf{u}_l \odot \tanh(\mathbf{y}_l)$$
 
 All gate weights $\mathbf{W}_*$ use a low-rank factorization ($d \to \text{rank} \to d$) and per-sublayer depth position biases $\mathbf{p}_*[l]$.
 
@@ -75,6 +75,10 @@ $$\mathbf{K} = \mathbf{W}_K \mathbf{y}, \quad \mathbf{V} = \mathbf{W}_V \mathbf{
 
 Depth-position biases are added before the feature map:
 $$\mathbf{K}_{dep} = \mathbf{K} + b_K[pos], \quad \mathbf{Q}_{dep} = \mathbf{Q} + b_Q[pos]$$
+
+To ensure numerical stability and prevent state growth, the query and key vectors are normalized and scaled before the positive feature map:
+$$\mathbf{K}_{dep} \leftarrow \text{RMSNorm}(\mathbf{K}_{dep}) \times \frac{1}{\sqrt{r_{head}}}$$
+$$\mathbf{Q}_{dep} \leftarrow \text{RMSNorm}(\mathbf{Q}_{dep}) \times \frac{1}{\sqrt{r_{head}}}$$
 
 The positive feature map $\phi(\mathbf{x}) = \text{ELU}(\mathbf{x}) + 1$ ensures state positivity.
 
@@ -137,7 +141,7 @@ Let $B_0, B_1, \ldots, B_{n-1}$ be the states at completed block boundaries, and
 
 $$\text{values} = \text{stack}([B_0, B_1, \ldots, B_{n-1}, B_\text{cur}]) \in \mathbb{R}^{(n+1) \times d}$$
 
-$$\text{logits} = \mathbf{q}^\top \text{RMSNorm}(\text{values}) \quad (\mathbf{q} \in \mathbb{R}^d \text{ is the pseudo-query})$$
+$$\text{logits} = \frac{\mathbf{q}^\top \text{RMSNorm}(\text{values})}{\sqrt{d_{model}}} \quad (\mathbf{q} \in \mathbb{R}^d \text{ is the pseudo-query})$$
 
 $$\mathbf{w} = \text{softmax}(\text{logits}) \in \mathbb{R}^{n+1}$$
 
