@@ -131,7 +131,7 @@ def test_calculate_gpi():
     scores = [0.9, 0.7, 0.5, 0.3, 0.1]
     expected_gpi = (0.9 + 0.7) / 2.0  # L=5 => floor(5/2) = 2 layers
     actual_gpi = calculate_gpi(scores[:3])  # pass 3 scores, so L=4, floor(4/2)=2
-    assert abs(actual_gpi - (0.9 + 0.7) / 2.0) < 1e-6
+    assert abs(actual_gpi - expected_gpi) < 1e-6
 
 
 def test_gps_extractor():
@@ -149,7 +149,7 @@ def test_gps_extractor():
     all_sources = []
 
     # Run batches
-    for i in range(0, N, batch_size):
+    for _ in range(0, N, batch_size):
         x = torch.randn(batch_size, 5, d)  # (batch, seq, d)
         targets = torch.randint(0, vocab_size, (batch_size, 5))
 

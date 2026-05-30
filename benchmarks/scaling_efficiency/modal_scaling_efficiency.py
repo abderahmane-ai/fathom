@@ -65,12 +65,13 @@ def _prepare_remote() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 
-def _run_mode(residual_mode: str, run_id: str) -> None:
+def _run_mode(residual_mode: str, run_id: str, compile: bool = False) -> None:
     """Run all sweep points for one residual mode remotely.
 
     Args:
         residual_mode: Residual mode to benchmark.
         run_id: Shared run id.
+        compile: Whether to compile the model.
 
     Returns:
         None.
@@ -81,6 +82,7 @@ def _run_mode(residual_mode: str, run_id: str) -> None:
     base_cfg = load_benchmark_config(BENCHMARK_NAME)
     for model_cfg in model_sweep(base_cfg):
         cfg = config_for_mode(base_cfg, residual_mode, model_cfg=model_cfg)
+        cfg.compile = compile
         sweep_run_id = f"{run_id}-d{cfg.model.d_model}-l{cfg.model.num_layers}"
         run_benchmark(cfg, BENCHMARK_NAME, residual_mode, sweep_run_id)
     artifact_volume.commit()
@@ -93,16 +95,17 @@ def _run_mode(residual_mode: str, run_id: str) -> None:
     retries=modal.Retries(max_retries=2, backoff_coefficient=2.0, initial_delay=30.0),
     volumes={ARTIFACT_MOUNT: artifact_volume},
 )
-def run_standard(run_id: str) -> None:
+def run_standard(run_id: str, compile: bool = False) -> None:
     """Run standard residual scaling sweep.
 
     Args:
         run_id: Shared run id.
+        compile: Whether to compile the model.
 
     Returns:
         None.
     """
-    _run_mode("standard", run_id)
+    _run_mode("standard", run_id, compile=compile)
 
 
 @app.function(
@@ -112,16 +115,17 @@ def run_standard(run_id: str) -> None:
     retries=modal.Retries(max_retries=2, backoff_coefficient=2.0, initial_delay=30.0),
     volumes={ARTIFACT_MOUNT: artifact_volume},
 )
-def run_recurrent_residual(run_id: str) -> None:
+def run_recurrent_residual(run_id: str, compile: bool = False) -> None:
     """Run Recurrent Residual scaling sweep.
 
     Args:
         run_id: Shared run id.
+        compile: Whether to compile the model.
 
     Returns:
         None.
     """
-    _run_mode("recurrent_residual", run_id)
+    _run_mode("recurrent_residual", run_id, compile=compile)
 
 
 @app.function(
@@ -131,16 +135,17 @@ def run_recurrent_residual(run_id: str) -> None:
     retries=modal.Retries(max_retries=2, backoff_coefficient=2.0, initial_delay=30.0),
     volumes={ARTIFACT_MOUNT: artifact_volume},
 )
-def run_vega(run_id: str) -> None:
+def run_vega(run_id: str, compile: bool = False) -> None:
     """Run VEGA scaling sweep.
 
     Args:
         run_id: Shared run id.
+        compile: Whether to compile the model.
 
     Returns:
         None.
     """
-    _run_mode("vega", run_id)
+    _run_mode("vega", run_id, compile=compile)
 
 
 @app.function(
@@ -150,34 +155,36 @@ def run_vega(run_id: str) -> None:
     retries=modal.Retries(max_retries=2, backoff_coefficient=2.0, initial_delay=30.0),
     volumes={ARTIFACT_MOUNT: artifact_volume},
 )
-def run_block_attnres(run_id: str) -> None:
+def run_block_attnres(run_id: str, compile: bool = False) -> None:
     """Run Block AttnRes scaling sweep.
 
     Args:
         run_id: Shared run id.
+        compile: Whether to compile the model.
 
     Returns:
         None.
     """
-    _run_mode("block_attnres", run_id)
+    _run_mode("block_attnres", run_id, compile=compile)
 
 
 @app.local_entrypoint()
-def main(wait: bool = False) -> None:
+def main(wait: bool = False, compile: bool = False) -> None:
     """Spawn scaling efficiency benchmark modes.
 
     Args:
         wait: Whether to wait for remote jobs.
+        compile: Whether to compile the model.
 
     Returns:
         None.
     """
     run_id = make_run_id(BENCHMARK_NAME)
     handles = {
-        "standard": run_standard.spawn(run_id),
-        "recurrent_residual": run_recurrent_residual.spawn(run_id),
-        "vega": run_vega.spawn(run_id),
-        "block_attnres": run_block_attnres.spawn(run_id),
+        "standard": run_standard.spawn(run_id, compile=compile),
+        "recurrent_residual": run_recurrent_residual.spawn(run_id, compile=compile),
+        "vega": run_vega.spawn(run_id, compile=compile),
+        "block_attnres": run_block_attnres.spawn(run_id, compile=compile),
     }
     manifest = write_spawn_manifest(BENCHMARK_NAME, handles, run_id)
     print(f"Spawned {BENCHMARK_NAME} jobs with run_id={run_id}")

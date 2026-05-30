@@ -159,7 +159,9 @@ class VEGACell(nn.Module):
         Returns:
             ``(S_state, z_state)`` — EMA covariance and normalization state.
         """
-        S0 = torch.zeros(B, S, self.n_heads, self.r_head, self.r_head, device=device, dtype=torch.float32)
+        S0 = torch.zeros(
+            B, S, self.n_heads, self.r_head, self.r_head, device=device, dtype=torch.float32
+        )
         z0 = torch.zeros(B, S, self.n_heads, self.r_head, device=device, dtype=torch.float32)
         return S0, z0
 

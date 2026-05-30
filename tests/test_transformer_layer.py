@@ -4,7 +4,6 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
-from src.modules.recurrent_residual import RecurrentResidualCell
 from src.modules.transformer_layer import TransformerLayer
 
 
