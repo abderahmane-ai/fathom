@@ -88,11 +88,8 @@ class LanguageModel(L.LightningModule):
         Returns:
             None.
         """
-        squared_norm = torch.zeros((), device=self.device)
-        for parameter in self.parameters():
-            if parameter.grad is not None:
-                squared_norm = squared_norm + parameter.grad.detach().pow(2).sum()
-        self.log("grad/global_norm", squared_norm.sqrt(), on_step=True)
+        total_norm = torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=float("inf"))
+        self.log("grad/global_norm", total_norm, on_step=True)
 
     # pyrefly: ignore [bad-override]
     def configure_optimizers(self) -> dict[str, Any]:

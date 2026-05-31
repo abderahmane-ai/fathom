@@ -190,11 +190,8 @@ class BenchmarkModule(lightning.LightningModule):
         Returns:
             None.
         """
-        squared_norm = torch.zeros((), device=self.device)
-        for parameter in self.parameters():
-            if parameter.grad is not None:
-                squared_norm = squared_norm + parameter.grad.detach().pow(2).sum()
-        self.log("grad/global_norm", squared_norm.sqrt(), on_step=True, prog_bar=False)
+        total_norm = torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=float("inf"))
+        self.log("grad/global_norm", total_norm, on_step=True, prog_bar=False)
 
     def _log_rr_gates(self) -> None:
         """Log RR diagnostics when the model exposes them.
