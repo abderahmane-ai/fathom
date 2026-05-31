@@ -14,7 +14,7 @@ Math (per sublayer at depth position pos):
     φ(x)  = ELU(x) + 1                          -- positive feature map
 
     # Linear-attention retrieval from previous state
-    # If r_head <= 64 (Vector State):
+    # If r_head <= _VECTOR_STATE_MAX_R_HEAD (Vector State):
         c = (φ(Q_dep) * S_prev) / (sum(φ(Q_dep) * z_prev) + ε)
     # Else (Matrix State):
         c = φ(Q_dep) S_prev / (φ(Q_dep) z_prev + ε)
@@ -29,7 +29,7 @@ Math (per sublayer at depth position pos):
 
     # EMA state update (per-head per-rank decay logits decay[pos])
     α = σ(decay[pos])
-    # If r_head <= 64 (Vector State):
+    # If r_head <= _VECTOR_STATE_MAX_R_HEAD (Vector State):
         S_new = α * S_prev + φ(K_dep) * (g * V)
     # Else (Matrix State):
         S_new = α[..., None] * S_prev + φ(K_dep)[..., None] * (g * V)[..., None, :]
@@ -280,9 +280,9 @@ class VEGACell(nn.Module):
         # z is always a vector regardless of state type.
         decay = torch.sigmoid(self.decay[pos]).view(1, 1, self.n_heads, self.r_head)
         if self.use_vector_state:
-            S_new = decay * S_prev + K_phi * (g * V)
+            S_new = decay * S_prev + K_phi * (g * V.float())
         else:
-            outer = K_phi.unsqueeze(-1) * (g * V).unsqueeze(-2)
+            outer = K_phi.unsqueeze(-1) * (g * V.float()).unsqueeze(-2)
             S_new = decay.unsqueeze(-1) * S_prev + outer
         z_new = decay * z_prev + K_phi
 

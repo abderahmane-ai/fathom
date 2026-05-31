@@ -50,6 +50,8 @@ class BenchmarkModule(lightning.LightningModule):
         self.model = TransformerDecoder(model_cfg)
         self.trainer_cfg = trainer_cfg
         self.save_hyperparameters(OmegaConf.to_container(model_cfg, resolve=True))
+        # Cache VEGA cell reference before any compilation wrapping.
+        self._vega_cell = getattr(self.model, "vega_cell", None)
 
     def _loss_from_batch(
         self,
@@ -94,17 +96,16 @@ class BenchmarkModule(lightning.LightningModule):
         Returns:
             Training loss.
         """
-        loss = self._loss_from_batch(batch)
-        # Encourage diversity in VEGA decay rates to preserve multi-scale depth coverage.
-        if getattr(self.model, "residual_mode", None) == "vega":
-            vega_cell = getattr(self.model, "vega_cell", None)
-            if vega_cell is not None:
-                alpha = torch.sigmoid(vega_cell.decay)
-                if alpha.numel() > 1:
-                    reg_loss = _VEGA_DECAY_VAR_REG_WEIGHT * alpha.var(dim=-1).mean()
-                    loss = loss - reg_loss
-        self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("train/ppl", torch.exp(loss.detach()), on_step=True, on_epoch=False)
+        ce_loss = self._loss_from_batch(batch)
+        loss = ce_loss
+        if self._vega_cell is not None:
+            alpha = torch.sigmoid(self._vega_cell.decay)
+            if alpha.numel() > 1:
+                reg = _VEGA_DECAY_VAR_REG_WEIGHT * alpha.var(dim=-1).mean()
+                loss = ce_loss - reg
+                self.log("train/vega_reg", reg.detach(), on_step=True)
+        self.log("train/loss", ce_loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("train/ppl", torch.exp(ce_loss.detach()), on_step=True, on_epoch=False)
         self._log_rr_gates()
         return loss
 
