@@ -93,6 +93,13 @@ class BenchmarkModule(lightning.LightningModule):
             Training loss.
         """
         loss = self._loss_from_batch(batch)
+        # Add Cut 2 Variance Regularizer for VEGA if enabled.
+        if getattr(self.model, "residual_mode", None) == "vega":
+            vega_cell = getattr(self.model, "vega_cell", None)
+            if vega_cell is not None:
+                alpha = torch.sigmoid(vega_cell.decay)
+                if alpha.numel() > 1:
+                    loss = loss - 0.01 * alpha.var()
         self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
         self.log("train/ppl", torch.exp(loss.detach()), on_step=True, on_epoch=False)
         self._log_rr_gates()

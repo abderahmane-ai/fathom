@@ -66,17 +66,24 @@ For a model with $L$ layers and $S = 2L$ sublayers, depth biases add $4 \times S
 
 ## 4. VEGA — Vertical EMA Gated Attention
 
-VEGA maintains a **linear-attention EMA state** $\mathbf{S} \in \mathbb{R}^{n_{\text{heads}} \times r \times r}$ per token that accumulates key-value outer products across depth, with **separate fast and slow head groups** for multi-scale temporal coverage.
+VEGA maintains a **linear-attention EMA state** per token that accumulates key-value products
+across depth. Under the optimized **Lean VEGA*** design, the state size is conditional on the
+head rank: it uses a **Vector State** $\mathbf{S} \in \mathbb{R}^{n_{\text{heads}} \times r_{\text{head}}}$
+($O(r)$ memory) if $r_{\text{head}} \le 64$ to eliminate cross-channel mixing overhead at small
+ranks, and falls back to a **Matrix State** $\mathbf{S} \in \mathbb{R}^{n_{\text{heads}} \times
+r_{\text{head}} \times r_{\text{head}}}$ ($O(r^2)$ memory) for $r_{\text{head}} \ge 128$.
 
 ### 4.1 Projections
 
 Each sublayer projects the current output $\mathbf{y}$ into the EMA space:
-$$\mathbf{K} = \mathbf{W}_K \mathbf{y}, \quad \mathbf{V} = \mathbf{W}_V \mathbf{y}, \quad \mathbf{Q} = \mathbf{W}_Q \mathbf{y}$$
+$$\mathbf{K} = \mathbf{W}_K \mathbf{y}, \quad \mathbf{V} = \mathbf{W}_V \mathbf{y},
+\quad \mathbf{Q} = \mathbf{W}_Q \mathbf{y}$$
 
-Depth-position biases are added before the feature map:
-$$\mathbf{K}_{dep} = \mathbf{K} + b_K[pos], \quad \mathbf{Q}_{dep} = \mathbf{Q} + b_Q[pos]$$
+Per-sublayer depth query bias is added (Cut 4, key bias is removed):
+$$\mathbf{Q}_{dep} = \mathbf{Q} + b_Q[pos], \quad \mathbf{K}_{dep} = \mathbf{K}$$
 
-To ensure numerical stability and prevent state growth, the query and key vectors are normalized and scaled before the positive feature map:
+To ensure numerical stability and prevent state growth, the query and key vectors are
+normalized and scaled before the positive feature map:
 $$\mathbf{K}_{dep} \leftarrow \text{RMSNorm}(\mathbf{K}_{dep}) \times \frac{1}{\sqrt{r_{head}}}$$
 $$\mathbf{Q}_{dep} \leftarrow \text{RMSNorm}(\mathbf{Q}_{dep}) \times \frac{1}{\sqrt{r_{head}}}$$
 
@@ -86,45 +93,64 @@ The positive feature map $\phi(\mathbf{x}) = \text{ELU}(\mathbf{x}) + 1$ ensures
 
 Linear-attention retrieval from the previous state $\mathbf{S}_{prev}$:
 
-$$c = \frac{\phi(\mathbf{Q}_{dep})^\top \mathbf{S}_{prev}}{\phi(\mathbf{Q}_{dep})^\top \mathbf{z}_{prev} + \varepsilon}$$
+- **Vector State** ($r_{head} \le 64$):
+  $$c = \frac{\phi(\mathbf{Q}_{dep}) \odot \mathbf{S}_{prev}}{(\phi(\mathbf{Q}_{dep}) \odot
+  \mathbf{z}_{prev}).\text{sum}(-1) + \varepsilon}$$
 
-The retrieval $c$ is split into fast and slow halves by head group, then projected through separate output layers:
+- **Matrix State** ($r_{head} \ge 128$):
+  $$c = \frac{\phi(\mathbf{Q}_{dep})^\top \mathbf{S}_{prev}}{\phi(\mathbf{Q}_{dep})^\top
+  \mathbf{z}_{prev} + \varepsilon}$$
 
-$$c_\text{out\_fast} = \text{out\_fast}(\text{RMSNorm}(c_\text{fast}))$$
-$$c_\text{out\_slow} = \text{out\_slow}(\text{RMSNorm}(c_\text{slow}))$$
+The retrieval $c$ is normalized and projected through a single output layer:
+$$c_\text{out} = \mathbf{W}_\text{out}(\text{RMSNorm}(c))$$
 
 ### 4.3 Hidden State Update
 
-Separate read gates per timescale — this is the key design distinction:
+Using a single read gate $\mathbf{r}$ and element-wise damp gate $\boldsymbol{\delta}$:
 
-$$\mathbf{r}_\text{fast} = \sigma(\mathbf{W}_\text{rf} \mathbf{y}), \quad \mathbf{r}_\text{slow} = \sigma(\mathbf{W}_\text{rs} \mathbf{y}), \quad \boldsymbol{\delta} = \sigma(\mathbf{w}_d \odot \mathbf{y} + \mathbf{b}_d)$$
+$$\mathbf{r} = \sigma(\mathbf{W}_r \mathbf{y}), \quad \boldsymbol{\delta} =
+\sigma(\mathbf{w}_d \odot \mathbf{y} + \mathbf{b}_d)$$
 
-$$\mathbf{h}_\text{new} = \boldsymbol{\delta} \odot \mathbf{h}_\text{prev} + \mathbf{y} + \mathbf{r}_\text{fast} \odot c_\text{out\_fast} + \mathbf{r}_\text{slow} \odot c_\text{out\_slow}$$
+$$\mathbf{h}_\text{new} = \boldsymbol{\delta} \odot \mathbf{h}_\text{prev} +
+\mathbf{y} + \mathbf{r} \odot c_\text{out}$$
 
 ### 4.4 EMA State Update
 
 $$\boldsymbol{\alpha} = \sigma(\text{decay}[pos]) \quad (\text{per-head, per-rank decay gates})$$
 
-$$\mathbf{S}_\text{new} = \boldsymbol{\alpha} \odot \mathbf{S}_\text{prev} + \phi(\mathbf{K}_{dep})^\top \otimes (g \odot \mathbf{V})$$
+- **Vector State** ($r_{head} \le 64$):
+  $$\mathbf{S}_\text{new} = \boldsymbol{\alpha} \odot \mathbf{S}_\text{prev} +
+  \phi(\mathbf{K}_{dep}) \odot (g \odot \mathbf{V})$$
+
+- **Matrix State** ($r_{head} \ge 128$):
+  $$\mathbf{S}_\text{new} = \boldsymbol{\alpha} \odot \mathbf{S}_\text{prev} +
+  \phi(\mathbf{K}_{dep})^\top \otimes (g \odot \mathbf{V})$$
+
+For both states, the normalization update is:
 $$\mathbf{z}_\text{new} = \boldsymbol{\alpha} \odot \mathbf{z}_\text{prev} + \phi(\mathbf{K}_{dep})$$
 
-where $g = \sigma(\mathbf{W}_g \mathbf{y})$ is a write gate that controls how much of $\mathbf{V}$ enters the state.
+where $g = \sigma(\mathbf{W}_g \mathbf{y})$ is a write gate that controls how much of $\mathbf{V}$
+enters the state.
 
-### 4.5 Initialization
+### 4.5 Initialization & Regularization
 
-- Decay gates initialized log-linearly: fast heads cover depth horizons $[1, \text{rank}]$, slow heads cover $[\text{rank}, 2L]$.
-- Output projections $\mathbf{W}_\text{out\_fast}$, $\mathbf{W}_\text{out\_slow}$ zero-initialized → zero-start compliant.
+- Decay gates initialized log-linearly in a continuous spectrum from $0.0$ to $4.5$ across
+  all channels.
+- Variance regularization is added to the training objective to prevent decay spectrum collapse
+  to a uniform value: $\mathcal{L}_\text{reg} = -0.01 \cdot \text{Var}(\boldsymbol{\alpha})$.
+- Output projection $\mathbf{W}_\text{out}$ is zero-initialized → zero-start compliant.
 - Key, value, query projections initialized orthogonally for conditioning.
 
 ### 4.6 Implementation Optimizations
 
 To maximize training throughput and prevent GPU kernel launch latency bottlenecks:
-- **Projection Fusion**: $\mathbf{Q}$, $\mathbf{K}$, and $\mathbf{V}$ projections are fused into a single combined projection layer:
+- **Projection Fusion**: $\mathbf{Q}$, $\mathbf{K}$, and $\mathbf{V}$ projections are fused into a
+  single combined projection layer:
   $$\begin{bmatrix} \mathbf{Q} \\ \mathbf{K} \\ \mathbf{V} \end{bmatrix} = \mathbf{W}_{qkv} \mathbf{y}$$
   and chunked back to independent streams in memory.
-- **Read Gate Fusion**: Fast and slow read gates are projected in parallel:
-  $$\begin{bmatrix} \text{logits}_\text{fast} \\ \text{logits}_\text{slow} \end{bmatrix} = \text{chunk}\left(\mathbf{W}_{read} \mathbf{y}\right)$$
-- **Kernel Fusion**: Using `torch.compile` allows PyTorch to dynamically compile and fuse element-wise operations (such as Sigmoid, ELU, and scaling updates) into a single combined CUDA kernel per sublayer, bypassing dispatch latency.
+- **Kernel Fusion**: Using `torch.compile` allows PyTorch to dynamically compile and fuse element-wise
+  operations (such as Sigmoid, ELU, and scaling updates) into a single combined CUDA kernel per
+  sublayer, bypassing dispatch latency.
 
 ---
 

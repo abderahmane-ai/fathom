@@ -97,19 +97,24 @@ All gate weights are low-rank (d → rank → d). All gates start near their ide
 
 ```
 K = key_proj(y),  V = val_proj(y),  Q = query_proj(y)
-K_dep = RMSNorm(K + key_bias[pos]) / sqrt(r_head)
+K_dep = RMSNorm(K) / sqrt(r_head)
 Q_dep = RMSNorm(Q + query_bias[pos]) / sqrt(r_head)
 φ(x) = ELU(x) + 1
 
-c_fast/slow = φ(Q_dep) S_prev / (φ(Q_dep) z_prev + ε)   [split by head group]
+# If r_head <= 64 (Vector state):
+c = (φ(Q_dep) * S_prev) / sum(φ(Q_dep) * z_prev + ε)
+S_new = σ(decay) * S_prev + φ(K_dep) * (write_gate * V)
 
-h_new = σ(damp) * h_prev + y + r_fast * c_out_fast + r_slow * c_out_slow
-
+# If r_head >= 128 (Matrix state):
+c = φ(Q_dep) S_prev / (φ(Q_dep) z_prev + ε)
 S_new = σ(decay) * S_prev + φ(K_dep) ⊗ (write_gate * V)
+
+# Hidden state update:
+h_new = σ(damp) * h_prev + y + read_gate * W_out(RMSNorm(c))
 z_new = σ(decay) * z_prev + φ(K_dep)
 ```
 
-Fast heads track short depth horizons; slow heads track long depth horizons.
+Uses conditional Vector/Matrix state based on head rank, query-only bias, and soft decay.
 
 ### Block Attention Residuals (AttnRes — Moonshot AI)
 

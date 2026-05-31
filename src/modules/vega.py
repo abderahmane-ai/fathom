@@ -1,34 +1,39 @@
 """VEGA — Vertical EMA Gated Attention.
 
 Depth memory cell that maintains a linear-attention EMA state across layers.
-Heads are split into fast (short depth-horizon) and slow (long depth-horizon)
-groups so the model can simultaneously track local and global depth context.
+Under Lean VEGA*, the state size is conditional: it uses a Vector State if r_head <= 64,
+and falls back to a Matrix State for larger ranks.
 
 Math (per sublayer at depth position pos):
     y_norm = RMSNorm(y)
     K  = key_proj(y_norm),   V  = val_proj(y_norm),  Q  = query_proj(y_norm)
     g  = σ(write_gate(y_norm))                  -- write gate
 
-    K_dep = RMSNorm(K + key_bias[pos]) / sqrt(r_head)
+    K_dep = RMSNorm(K) / sqrt(r_head)
     Q_dep = RMSNorm(Q + query_bias[pos]) / sqrt(r_head)
     φ(x)  = ELU(x) + 1                          -- positive feature map
 
     # Linear-attention retrieval from previous state
-    c         = φ(Q_dep) S_prev / (φ(Q_dep) z_prev + ε)
-    c_fast    = c[:n_fast_heads, :]
-    c_slow    = c[n_fast_heads:, :]
-    c_out     = out_fast(norm_fast(c_fast)) + out_slow(norm_slow(c_slow))
+    # If r_head <= 64 (Vector State):
+        c = (φ(Q_dep) * S_prev) / (sum(φ(Q_dep) * z_prev) + ε)
+    # Else (Matrix State):
+        c = φ(Q_dep) S_prev / (φ(Q_dep) z_prev + ε)
 
-    # Separate per-timescale read gates (the key architectural feature)
-    r_fast = σ(read_fast(y_norm)),  r_slow = σ(read_slow(y_norm))
-    damp   = σ(damp_weight * y_norm + damp_bias)
+    c_out = out_proj(norm_c(c))
 
-    h_new = damp * h_prev + y + r_fast * c_out_fast + r_slow * c_out_slow
+    # Single read gate and damp gate
+    r    = σ(read_proj(y_norm))
+    damp = σ(damp_weight * y_norm + damp_bias)
 
-    # EMA state update
-    α      = σ(decay[pos])                      -- per-head per-rank decay
-    S_new  = α[..., None] * S_prev + φ(K_dep)[..., None] * (g * V)[..., None, :]
-    z_new  = α * z_prev + φ(K_dep)
+    h_new = damp * h_prev + y + r * c_out
+
+    # EMA state update (per-head per-rank decay logits decay[pos])
+    α = σ(decay[pos])
+    # If r_head <= 64 (Vector State):
+        S_new = α * S_prev + φ(K_dep) * (g * V)
+    # Else (Matrix State):
+        S_new = α[..., None] * S_prev + φ(K_dep)[..., None] * (g * V)[..., None, :]
+    z_new = α * z_prev + φ(K_dep)
 """
 
 from __future__ import annotations
@@ -89,48 +94,44 @@ class VEGACell(nn.Module):
         assert rank % n_heads == 0, "rank must be divisible by n_heads"
         assert 0 < n_fast_heads < n_heads, "n_fast_heads must be in (0, n_heads)"
 
-        self.d_model      = d_model
-        self.num_layers   = num_layers
+        self.d_model = d_model
+        self.num_layers = num_layers
         self.num_sublayers = num_layers * 2
-        self.rank         = rank
-        self.n_heads      = n_heads
+        self.rank = rank
+        self.n_heads = n_heads
         self.n_fast_heads = n_fast_heads
-        self.r_head       = rank // n_heads
-        self.eps          = eps
-        self.y_norm       = _ParameterFreeRMSNorm(eps=eps)
+        self.r_head = rank // n_heads
+        self.eps = eps
+        self.y_norm = _ParameterFreeRMSNorm(eps=eps)
+
+        # Conditional state type based on head rank (Lean VEGA*)
+        self.use_vector_state = (self.r_head <= 64)
 
         # Projections into the rank-dimensional EMA space.
         # Fused Q, K, V projection to reduce GPU kernel launch overhead.
-        self.qkv_proj   = nn.Linear(d_model, 3 * rank, bias=False)
+        self.qkv_proj = nn.Linear(d_model, 3 * rank, bias=False)
         self.write_gate = nn.Linear(d_model, rank, bias=True)
 
-        # Fused read gates to reduce GPU kernel launch overhead.
-        self.read_proj = nn.Linear(d_model, 2 * d_model, bias=True)
+        # Single read gate projection.
+        self.read_proj = nn.Linear(d_model, d_model, bias=True)
 
         # Element-wise damp gate: σ(damp_weight ⊙ y + damp_bias).
         self.damp_weight = nn.Parameter(torch.empty(d_model))
-        self.damp_bias   = nn.Parameter(torch.full((d_model,), damp_gate_bias))
+        self.damp_bias = nn.Parameter(torch.full((d_model,), damp_gate_bias))
 
-        n_slow_heads = n_heads - n_fast_heads
-        self.out_fast  = nn.Linear(n_fast_heads * self.r_head, d_model, bias=False)
-        self.out_slow  = nn.Linear(n_slow_heads  * self.r_head, d_model, bias=False)
-        self.norm_fast = RMSNorm(n_fast_heads * self.r_head, eps=eps)
-        self.norm_slow = RMSNorm(n_slow_heads  * self.r_head, eps=eps)
+        # Single output projection and RMSNorm.
+        self.out_proj = nn.Linear(rank, d_model, bias=False)
+        self.norm_c = RMSNorm(rank, eps=eps)
 
-        # Per-sublayer depth biases — allow each depth position to specialize its
-        # query/key bias without changing the projection weights.
+        # Per-sublayer depth biases — query bias only (Lean VEGA* Cut 4).
         self.query_bias = nn.Parameter(torch.zeros(self.num_sublayers, n_heads, self.r_head))
-        self.key_bias   = nn.Parameter(torch.zeros(self.num_sublayers, n_heads, self.r_head))
 
-        # Decay logits for the EMA.  Initialized log-linearly so fast heads have
-        # short depth horizons and slow heads have long ones.
+        # Decay logits for the EMA. Spaced log-linearly (linearly in logit space).
         self.decay = nn.Parameter(torch.empty(self.num_sublayers, n_heads, self.r_head))
         with torch.no_grad():
             for pos in range(self.num_sublayers):
-                fast_logits = torch.linspace(*fast_decay_range, n_fast_heads * self.r_head)
-                slow_logits = torch.linspace(*slow_decay_range, n_slow_heads  * self.r_head)
-                self.decay[pos, :n_fast_heads]  = fast_logits.view(n_fast_heads, self.r_head)
-                self.decay[pos, n_fast_heads:]  = slow_logits.view(n_slow_heads,  self.r_head)
+                logits = torch.linspace(0.0, slow_decay_range[1], self.rank)
+                self.decay[pos].copy_(logits.view(self.n_heads, self.r_head))
 
         # Orthogonal init for the EMA projections — improves conditioning of the state.
         with torch.no_grad():
@@ -151,9 +152,8 @@ class VEGACell(nn.Module):
 
         nn.init.normal_(self.damp_weight, 0.0, gate_init_std)
 
-        # Zero-init output projections so the cell starts as a standard residual.
-        nn.init.zeros_(self.out_fast.weight)
-        nn.init.zeros_(self.out_slow.weight)
+        # Zero-init output projection so the cell starts as a standard residual.
+        nn.init.zeros_(self.out_proj.weight)
 
     @property
     def key_proj(self) -> nn.Linear:
@@ -173,9 +173,14 @@ class VEGACell(nn.Module):
         Returns:
             ``(S_state, z_state)`` — EMA covariance and normalization state.
         """
-        S0 = torch.zeros(
-            B, S, self.n_heads, self.r_head, self.r_head, device=device, dtype=torch.float32
-        )
+        if self.use_vector_state:
+            S0 = torch.zeros(
+                B, S, self.n_heads, self.r_head, device=device, dtype=torch.float32
+            )
+        else:
+            S0 = torch.zeros(
+                B, S, self.n_heads, self.r_head, self.r_head, device=device, dtype=torch.float32
+            )
         z0 = torch.zeros(B, S, self.n_heads, self.r_head, device=device, dtype=torch.float32)
         return S0, z0
 
@@ -213,46 +218,50 @@ class VEGACell(nn.Module):
         Q = Q.view(B, Seq, self.n_heads, self.r_head)
         g = torch.sigmoid(self.write_gate(y_norm)).view(B, Seq, self.n_heads, self.r_head)
 
-        # Add per-sublayer depth biases.
-        K_dep = K + self.key_bias[pos].view(1, 1, self.n_heads, self.r_head)
+        # Add per-sublayer query depth bias (Lean VEGA* Cut 4).
         Q_dep = Q + self.query_bias[pos].view(1, 1, self.n_heads, self.r_head)
+        K_dep = K
 
         # Normalize and scale query and key vectors before the positive feature map.
-        K_dep = K_dep * torch.rsqrt(
-            K_dep.pow(2).mean(dim=-1, keepdim=True) + self.eps
-        ) / (self.r_head ** 0.5)
-        Q_dep = Q_dep * torch.rsqrt(
-            Q_dep.pow(2).mean(dim=-1, keepdim=True) + self.eps
-        ) / (self.r_head ** 0.5)
+        K_scale = torch.rsqrt(K_dep.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        K_dep = K_dep * K_scale / (self.r_head ** 0.5)
+
+        Q_scale = torch.rsqrt(Q_dep.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        Q_dep = Q_dep * Q_scale / (self.r_head ** 0.5)
 
         # Positive feature map φ(x) = ELU(x) + 1 (ensures state positivity).
         K_phi = (F.elu(K_dep) + 1.0).float()
         Q_phi = (F.elu(Q_dep) + 1.0).float()
 
-        # Linear-attention retrieval: c = Q_phi S_prev / (Q_phi z_prev + ε)
-        num = torch.matmul(Q_phi.unsqueeze(-2), S_prev.float()).squeeze(-2)
-        den = (Q_phi * z_prev.float()).sum(-1, keepdim=True).clamp(min=self.eps)
-        c = (num / den).to(y.dtype)  # (B, Seq, n_heads, r_head)
+        # Linear-attention retrieval.
+        if self.use_vector_state:
+            # Vector state: S_prev is (B, Seq, n_heads, r_head)
+            num = Q_phi * S_prev.float()
+            den = (Q_phi * z_prev.float()).sum(-1, keepdim=True).clamp(min=self.eps)
+            c = (num / den).to(y.dtype)
+        else:
+            # Matrix state: S_prev is (B, Seq, n_heads, r_head, r_head)
+            num = torch.matmul(Q_phi.unsqueeze(-2), S_prev.float()).squeeze(-2)
+            den = (Q_phi * z_prev.float()).sum(-1, keepdim=True).clamp(min=self.eps)
+            c = (num / den).to(y.dtype)
 
-        # Split retrieval by timescale and apply separate output projections.
-        c_fast = c[:, :, :self.n_fast_heads, :].contiguous().view(B, Seq, -1)
-        c_slow = c[:, :, self.n_fast_heads:, :].contiguous().view(B, Seq, -1)
-        c_out_fast = self.out_fast(self.norm_fast(c_fast))
-        c_out_slow = self.out_slow(self.norm_slow(c_slow))
+        # Single output projection and RMSNorm.
+        c_flat = c.contiguous().view(B, Seq, self.rank)
+        c_out = self.out_proj(self.norm_c(c_flat))
 
-        # Separate read gates per timescale — the key distinction from a single gate.
-        read_gates = self.read_proj(y_norm)
-        r_fast, r_slow = read_gates.chunk(2, dim=-1)
-        r_fast = torch.sigmoid(r_fast)
-        r_slow = torch.sigmoid(r_slow)
-        damp   = torch.sigmoid(self.damp_weight * y_norm + self.damp_bias)
+        # Single read gate and damp gate.
+        read_gate = torch.sigmoid(self.read_proj(y_norm))
+        damp = torch.sigmoid(self.damp_weight * y_norm + self.damp_bias)
 
-        h_new = damp * h_prev + y + r_fast * c_out_fast + r_slow * c_out_slow
+        h_new = damp * h_prev + y + read_gate * c_out
 
-        # EMA state update: S_new = α S_prev + φ(K_dep) ⊗ (g * V)
+        # EMA state update.
         decay = torch.sigmoid(self.decay[pos]).view(1, 1, self.n_heads, self.r_head)
-        outer = K_phi.unsqueeze(-1) * (g * V.float()).unsqueeze(-2)
-        S_new = decay.unsqueeze(-1) * S_prev + outer
+        if self.use_vector_state:
+            S_new = decay * S_prev + K_phi * (g * V.float())
+        else:
+            outer = K_phi.unsqueeze(-1) * (g * V.float()).unsqueeze(-2)
+            S_new = decay.unsqueeze(-1) * S_prev + outer
         z_new = decay * z_prev + K_phi
 
         return h_new, (S_new, z_new)

@@ -53,7 +53,10 @@ class TestVEGACellForward:
         h_prev = torch.randn(B, S, d_model)
         y = torch.randn(B, S, d_model)
         _, (S_state, z_state) = cell(h_prev, y, m, layer_idx=0, sublayer=0)
-        assert S_state.shape == (B, S, cell.n_heads, cell.r_head, cell.r_head)
+        if cell.use_vector_state:
+            assert S_state.shape == (B, S, cell.n_heads, cell.r_head)
+        else:
+            assert S_state.shape == (B, S, cell.n_heads, cell.r_head, cell.r_head)
         assert z_state.shape == (B, S, cell.n_heads, cell.r_head)
 
     def test_forward_requires_valid_state(self, cell, B, S, d_model):

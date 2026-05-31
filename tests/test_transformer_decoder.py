@@ -117,7 +117,10 @@ def test_vega_memory_flow(config):
         S_state, z_state = m
         n_heads = config.vega.get("n_heads", 4)
         r_head = config.vega.rank // n_heads
-        assert S_state.shape == (B, S, n_heads, r_head, r_head)
+        if model.vega_cell.use_vector_state:
+            assert S_state.shape == (B, S, n_heads, r_head)
+        else:
+            assert S_state.shape == (B, S, n_heads, r_head, r_head)
         assert z_state.shape == (B, S, n_heads, r_head)
 
 

@@ -99,9 +99,14 @@ def test_forward_with_vega_memory_flow(config):
     assert h_out.shape == (B, S, d_model)
     assert m_out is not None
     S_state, z_state = m_out
-    assert S_state.shape == (
-        B, S, layer.vega_cell.n_heads, layer.vega_cell.r_head, layer.vega_cell.r_head
-    )
+    if layer.vega_cell.use_vector_state:
+        assert S_state.shape == (
+            B, S, layer.vega_cell.n_heads, layer.vega_cell.r_head
+        )
+    else:
+        assert S_state.shape == (
+            B, S, layer.vega_cell.n_heads, layer.vega_cell.r_head, layer.vega_cell.r_head
+        )
     assert z_state.shape == (B, S, layer.vega_cell.n_heads, layer.vega_cell.r_head)
 
 
