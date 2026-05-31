@@ -22,6 +22,13 @@ class RotaryEmbedding(nn.Module):
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self.max_seq_len = max_seq_len
 
+        # Precompute the tables up to max_seq_len
+        t = torch.arange(max_seq_len, dtype=inv_freq.dtype)
+        freqs = torch.einsum("i, j -> i j", t, inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        self.register_buffer("cos_cached", emb.cos(), persistent=False)
+        self.register_buffer("sin_cached", emb.sin(), persistent=False)
+
     def forward(self, x: torch.Tensor, seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
         """Return (cos, sin) tables for positions 0 … seq_len-1.
 
@@ -32,10 +39,13 @@ class RotaryEmbedding(nn.Module):
         Returns:
             ``(cos, sin)`` each of shape (seq_len, head_dim).
         """
-        t = torch.arange(seq_len, device=x.device, dtype=self.inv_freq.dtype)
-        freqs = torch.einsum("i , j -> i j", t, self.inv_freq)
-        emb = torch.cat((freqs, freqs), dim=-1)
-        return emb.cos(), emb.sin()
+        if seq_len > self.max_seq_len:
+            # Fallback to dynamic computation if seq_len exceeds max_seq_len
+            t = torch.arange(seq_len, device=x.device, dtype=self.inv_freq.dtype)
+            freqs = torch.einsum("i, j -> i j", t, self.inv_freq)
+            emb = torch.cat((freqs, freqs), dim=-1)
+            return emb.cos(), emb.sin()
+        return self.cos_cached[:seq_len], self.sin_cached[:seq_len]
 
 
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
