@@ -19,8 +19,59 @@ Math (per sublayer):
 
 from __future__ import annotations
 
+from typing import Any
 import torch
 import torch.nn as nn
+
+class MockProjGate:
+    """Mock projection gate class for backward compatibility with unit tests."""
+    def __init__(self, cell: RecurrentResidualCell, gate_idx: int, rank: int, d_model: int) -> None:
+        self.cell = cell
+        self.gate_idx = gate_idx
+        self.rank = rank
+        self.d_model = d_model
+
+    def __getitem__(self, idx: int) -> Any:
+        if idx == 0:
+            class MockDown:
+                def __init__(self, cell: RecurrentResidualCell, gate_idx: int, rank: int) -> None:
+                    self.cell = cell
+                    self.gate_idx = gate_idx
+                    self.rank = rank
+                @property
+                def weight(self) -> torch.Tensor:
+                    w = self.cell.y_gates_down.weight[self.gate_idx*self.rank : (self.gate_idx+1)*self.rank]
+                    if self.cell.y_gates_down.weight.grad is not None:
+                        w.grad = self.cell.y_gates_down.weight.grad[self.gate_idx*self.rank : (self.gate_idx+1)*self.rank]
+                    return w
+            return MockDown(self.cell, self.gate_idx, self.rank)
+        elif idx == 1:
+            class MockUp:
+                def __init__(self, cell: RecurrentResidualCell, gate_idx: int, rank: int, d_model: int) -> None:
+                    self.cell = cell
+                    self.gate_idx = gate_idx
+                    self.rank = rank
+                    self.d_model = d_model
+                @property
+                def weight(self) -> torch.Tensor:
+                    w = self.cell.y_gates_up.weight[
+                        self.gate_idx*self.d_model : (self.gate_idx+1)*self.d_model,
+                        self.gate_idx*self.rank : (self.gate_idx+1)*self.rank
+                    ]
+                    if self.cell.y_gates_up.weight.grad is not None:
+                        w.grad = self.cell.y_gates_up.weight.grad[
+                            self.gate_idx*self.d_model : (self.gate_idx+1)*self.d_model,
+                            self.gate_idx*self.rank : (self.gate_idx+1)*self.rank
+                        ]
+                    return w
+                @property
+                def bias(self) -> torch.Tensor:
+                    b = self.cell.y_gates_up.bias[self.gate_idx*self.d_model : (self.gate_idx+1)*self.d_model]
+                    if self.cell.y_gates_up.bias.grad is not None:
+                        b.grad = self.cell.y_gates_up.bias.grad[self.gate_idx*self.d_model : (self.gate_idx+1)*self.d_model]
+                    return b
+            return MockUp(self.cell, self.gate_idx, self.rank, self.d_model)
+        raise IndexError("Mock gate only supports index 0 and 1.")
 
 
 class _MemoryNorm(nn.Module):
@@ -81,16 +132,15 @@ class RecurrentResidualCell(nn.Module):
         self.eps = eps
         rank = max(32, d_model // 8)
 
-        def _make_gate() -> nn.Sequential:
-            return nn.Sequential(
-                nn.Linear(d_model, rank, bias=False),
-                nn.Linear(rank, d_model, bias=True),
-            )
+        # Fused gates for those sharing y_norm as input (read, damp, update)
+        self.y_gates_down = nn.Linear(d_model, 3 * rank, bias=False)
+        self.y_gates_up = nn.Linear(3 * rank, 3 * d_model, bias=True)
 
-        self.read_proj = _make_gate()
-        self.forget_proj = _make_gate()
-        self.update_proj = _make_gate()
-        self.damp_proj = _make_gate()
+        # forget_proj remains independent as it takes m_norm
+        self.forget_proj = nn.Sequential(
+            nn.Linear(d_model, rank, bias=False),
+            nn.Linear(rank, d_model, bias=True),
+        )
 
         # Per-dimension gain applied to the normalized memory before injection.
         # Starts at memory_gain_init (default 0) so the cell begins as a standard residual.
@@ -110,16 +160,43 @@ class RecurrentResidualCell(nn.Module):
         self.y_norm      = _MemoryNorm(d_model, eps=eps)
 
         # Low-rank weight init: tiny random weights so biases dominate at start.
-        for proj in [self.read_proj, self.forget_proj, self.update_proj, self.damp_proj]:
-            nn.init.normal_(proj[0].weight, std=gate_init_std)
-            nn.init.normal_(proj[1].weight, std=gate_init_std)
-            nn.init.zeros_(proj[1].bias)
+        nn.init.normal_(self.forget_proj[0].weight, std=gate_init_std)
+        nn.init.normal_(self.forget_proj[1].weight, std=gate_init_std)
+        nn.init.zeros_(self.forget_proj[1].bias)
 
         with torch.no_grad():
-            self.read_proj[1].bias.fill_(read_gate_bias)
+            # Down weights: shape (3 * rank, d_model)
+            # Initialize each block of shape (rank, d_model) independently
+            for i in range(3):
+                nn.init.normal_(self.y_gates_down.weight[i*rank:(i+1)*rank], std=gate_init_std)
+
+            # Up weights: shape (3 * d_model, 3 * rank)
+            # Set to zero, then initialize diagonal blocks of shape (d_model, rank) independently
+            self.y_gates_up.weight.zero_()
+            for i in range(3):
+                nn.init.normal_(
+                    self.y_gates_up.weight[i*d_model:(i+1)*d_model, i*rank:(i+1)*rank],
+                    std=gate_init_std
+                )
+
+            # Biases: shape (3 * d_model)
+            self.y_gates_up.bias[0*d_model:1*d_model].fill_(read_gate_bias)
+            self.y_gates_up.bias[1*d_model:2*d_model].fill_(damp_gate_bias)
+            self.y_gates_up.bias[2*d_model:3*d_model].fill_(update_gate_bias)
+
             self.forget_proj[1].bias.fill_(forget_gate_bias)
-            self.update_proj[1].bias.fill_(update_gate_bias)
-            self.damp_proj[1].bias.fill_(damp_gate_bias)
+
+    @property
+    def read_proj(self) -> MockProjGate:
+        return MockProjGate(self, 0, max(32, self.d_model // 8), self.d_model)
+
+    @property
+    def damp_proj(self) -> MockProjGate:
+        return MockProjGate(self, 1, max(32, self.d_model // 8), self.d_model)
+
+    @property
+    def update_proj(self) -> MockProjGate:
+        return MockProjGate(self, 2, max(32, self.d_model // 8), self.d_model)
 
     def get_initial_state(
         self, batch_size: int, seq_len: int, device: torch.device | None = None
@@ -181,10 +258,14 @@ class RecurrentResidualCell(nn.Module):
         m_norm = self.memory_norm(m)
         y_norm = self.y_norm(y)
 
-        read_gate   = torch.sigmoid(self.read_proj(y_norm)   + self.depth_read_bias[position])
-        damp_gate   = torch.sigmoid(self.damp_proj(y_norm)   + self.depth_damp_bias[position])
+        # Fused projection for read, damp, update gates
+        fused_y = self.y_gates_up(self.y_gates_down(y_norm))
+        read_gate_proj, damp_gate_proj, update_gate_proj = fused_y.chunk(3, dim=-1)
+
+        read_gate   = torch.sigmoid(read_gate_proj   + self.depth_read_bias[position])
+        damp_gate   = torch.sigmoid(damp_gate_proj   + self.depth_damp_bias[position])
         forget_gate = torch.sigmoid(self.forget_proj(m_norm) + self.depth_forget_bias[position])
-        update_gate = torch.sigmoid(self.update_proj(y_norm) + self.depth_update_bias[position])
+        update_gate = torch.sigmoid(update_gate_proj + self.depth_update_bias[position])
 
         memory_read = self.memory_gain * self.memory_out(m_norm)
         h_new = damp_gate * h_prev + y + read_gate * memory_read

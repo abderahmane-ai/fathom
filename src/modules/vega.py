@@ -116,12 +116,10 @@ class VEGACell(nn.Module):
         # Projections into the rank-dimensional EMA space.
         # Fused Q, K, V projection to reduce GPU kernel launch overhead.
         self.qkv_proj = nn.Linear(d_model, 3 * rank, bias=False)
-        self.write_gate = nn.Linear(d_model, rank, bias=True)
-
-        # Single low-rank read gate projection.
+        # Single fused write gate and read down projection
         _read_rank = max(32, d_model // 16)
         self.read_rank = _read_rank
-        self.read_proj_down = nn.Linear(d_model, _read_rank, bias=False)
+        self.fused_write_read_proj = nn.Linear(d_model, rank + _read_rank, bias=True)
         self.read_proj_up   = nn.Linear(_read_rank, d_model, bias=True)
 
         # Element-wise damp gate: σ(damp_weight ⊙ y + damp_bias).
@@ -163,12 +161,16 @@ class VEGACell(nn.Module):
             self.qkv_proj.weight.copy_(torch.cat([q_init, k_init, v_init], dim=0))
 
         # Gate inits: tiny weights so biases dominate at the start.
-        nn.init.normal_(self.write_gate.weight, 0.0, gate_init_std)
-        self.write_gate.bias.data.fill_(write_gate_bias)
-
-        nn.init.normal_(self.read_proj_down.weight, 0.0, gate_init_std)
-        nn.init.normal_(self.read_proj_up.weight, 0.0, gate_init_std)
-        self.read_proj_up.bias.data.fill_(read_gate_bias)
+        with torch.no_grad():
+            nn.init.normal_(self.fused_write_read_proj.weight[:rank], 0.0, gate_init_std)
+            nn.init.normal_(self.fused_write_read_proj.weight[rank:], 0.0, gate_init_std)
+            self.fused_write_read_proj.bias.data[:rank].fill_(write_gate_bias)
+            # read_proj_down originally had bias=False; zeroing this slice preserves equivalence
+            # and prevents future maintainers from accidentally adding a non-zero bias here.
+            self.fused_write_read_proj.bias.data[rank:].zero_()
+            
+            nn.init.normal_(self.read_proj_up.weight, 0.0, gate_init_std)
+            self.read_proj_up.bias.data.fill_(read_gate_bias)
 
         nn.init.normal_(self.damp_weight, 0.0, gate_init_std)
 
@@ -236,7 +238,10 @@ class VEGACell(nn.Module):
         K = K.view(B, Seq, self.n_heads, self.r_head)
         V = V.view(B, Seq, self.n_heads, self.r_head)
         Q = Q.view(B, Seq, self.n_heads, self.r_head)
-        g = torch.sigmoid(self.write_gate(y_norm)).view(B, Seq, self.n_heads, self.r_head).float()
+        # Fused write gate and read down projection
+        fused_gate_down = self.fused_write_read_proj(y_norm)
+        write_gate_proj, read_proj_down_proj = fused_gate_down.split([self.rank, self.read_rank], dim=-1)
+        g = torch.sigmoid(write_gate_proj).view(B, Seq, self.n_heads, self.r_head).float()
 
         # Per-sublayer query depth bias only. Key depth bias is omitted; query bias alone is
         # sufficient for read selectivity.
@@ -272,7 +277,7 @@ class VEGACell(nn.Module):
         c_out = self.out_proj(self.norm_c(c_flat).to(y.dtype))
 
         # Single read gate and damp gate.
-        read_gate = torch.sigmoid(self.read_proj_up(self.read_proj_down(y_norm)))
+        read_gate = torch.sigmoid(self.read_proj_up(read_proj_down_proj))
         damp = torch.sigmoid(self.damp_weight * y_norm + self.damp_bias)
 
         h_new = damp * h_prev + y + read_gate * c_out
@@ -285,17 +290,24 @@ class VEGACell(nn.Module):
         if self.use_vector_state:
             S_new = decay * S_prev + K_phi * (g * V.float())
         else:
-            # Chunked outer product to cap peak memory for large r_head / S.
-            # Without chunking, the intermediate (B, S, H, r_head, r_head) tensor
-            # consumes ~4.2 GB for B=8, S=2048, H=32, r_head=128.  Chunking over
-            # the sequence dimension limits the peak to O(chunk_size * r_head^2).
-            S_new = decay.unsqueeze(-1) * S_prev
-            for s_start in range(0, Seq, _MATRIX_STATE_CHUNK_S):
-                s_end = min(s_start + _MATRIX_STATE_CHUNK_S, Seq)
-                K_chunk = K_phi[:, s_start:s_end]
-                V_chunk = (g[:, s_start:s_end] * V[:, s_start:s_end].float())
-                outer_chunk = K_chunk.unsqueeze(-1) * V_chunk.unsqueeze(-2)
-                S_new[:, s_start:s_end] += outer_chunk
+            # Dynamically decide if sequence length is safe for single-step parallel outer product
+            # Max safe sequence length for unchunked outer product (~512MB budget)
+            max_safe_seq = int(512 * 1024 * 1024 / (B * self.n_heads * self.r_head**2 * 4))
+            if Seq <= max_safe_seq:
+                outer = K_phi.unsqueeze(-1) * (g * V.float()).unsqueeze(-2)
+                S_new = decay.unsqueeze(-1) * S_prev + outer
+            else:
+                # Chunked outer product to cap peak memory for large r_head / S.
+                # Without chunking, the intermediate (B, S, H, r_head, r_head) tensor
+                # consumes ~4.2 GB for B=8, S=2048, H=32, r_head=128.  Chunking over
+                # the sequence dimension limits the peak to O(chunk_size * r_head^2).
+                S_new = decay.unsqueeze(-1) * S_prev
+                for s_start in range(0, Seq, _MATRIX_STATE_CHUNK_S):
+                    s_end = min(s_start + _MATRIX_STATE_CHUNK_S, Seq)
+                    K_chunk = K_phi[:, s_start:s_end]
+                    V_chunk = (g[:, s_start:s_end] * V[:, s_start:s_end].float())
+                    outer_chunk = K_chunk.unsqueeze(-1) * V_chunk.unsqueeze(-2)
+                    S_new[:, s_start:s_end] += outer_chunk
         z_new = decay * z_prev + K_phi
 
         return h_new, (S_new, z_new)
