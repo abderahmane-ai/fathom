@@ -64,6 +64,13 @@ addopts = "--tb=short -q"
 source = ["src"]
 omit = ["tests/*"]
 
+# ── FSDP (multi-GPU) ──────────────────────────────────────────────────────────
+# When scaling to multi-node, use TransformerDecoder.get_fsdp_wrap_policy()
+# to wrap each TransformerLayer individually.  Weight-tied depth cells
+# (rr_cell, vega_cell) are O(d) parameters shared across all layers — FSDP
+# handles shared parameters safely.  Leaving them unwrapped reduces
+# all-reduce overhead.
+
 # ── Pyright ───────────────────────────────────────────────────────────────────
 [tool.pyright]
 include = ["src", "tests"]

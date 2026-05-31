@@ -103,6 +103,15 @@ def config_for_mode(
     selected = OmegaConf.create(deepcopy(OmegaConf.to_container(cfg, resolve=True)))
     selected.model = model_cfg if model_cfg is not None else selected.model
     selected.model.residual_mode = residual_mode
-    if residual_mode == "block_attnres" and "attnres_block" not in selected.model:
-        raise ValueError("block_attnres requires model.attnres_block config.")
+    if residual_mode == "block_attnres":
+        if "attnres_block" not in selected.model:
+            raise ValueError("block_attnres requires model.attnres_block config.")
+        # BlockAttnRes stacks full depth history; reduce micro-batch and accumulate
+        # to match effective batch size without O(L^2) activation memory blow-up.
+        base_bs = int(selected.data.batch_size)
+        attnres_bs = int(selected.data.get("batch_size_block_attnres", 32))
+        if attnres_bs < base_bs:
+            selected.data.batch_size = attnres_bs
+            selected.trainer.accumulate_grad_batches = max(1, base_bs // attnres_bs)
+        selected.model.grad_checkpointing = True
     return selected

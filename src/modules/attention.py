@@ -68,8 +68,11 @@ def apply_rotary_pos_emb(
     Returns:
         Rotated ``(q_embed, k_embed)``.
     """
-    cos = cos.to(q.dtype).unsqueeze(0).unsqueeze(0)
-    sin = sin.to(q.dtype).unsqueeze(0).unsqueeze(0)
+    # Align cos/sin to the device AND dtype of q.
+    # Precomputed buffers live on CPU until the first CUDA forward; without this
+    # an explicit device mismatch crashes under torch.compile.
+    cos = cos.to(device=q.device, dtype=q.dtype).unsqueeze(0).unsqueeze(0)
+    sin = sin.to(device=q.device, dtype=q.dtype).unsqueeze(0).unsqueeze(0)
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed

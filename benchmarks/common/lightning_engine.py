@@ -37,6 +37,17 @@ _VEGA_DECAY_VAR_REG_WEIGHT: float = 0.001
 log = logging.getLogger(__name__)
 
 
+def _tensor_stats(t: torch.Tensor, name: str) -> str:
+    """Return a compact diagnostic string for a tensor."""
+    tf = t.detach().float()
+    return (
+        f"{name}: shape={tuple(t.shape)} dtype={t.dtype} "
+        f"min={tf.min().item():.4g} max={tf.max().item():.4g} "
+        f"mean={tf.mean().item():.4g} "
+        f"nan={tf.isnan().any().item()} inf={tf.isinf().any().item()}"
+    )
+
+
 class BenchmarkModule(lightning.LightningModule):
     """Lightning module for language-model and synthetic benchmark batches.
 
@@ -69,7 +80,7 @@ class BenchmarkModule(lightning.LightningModule):
             input_ids, labels = batch
             logits = self.model(input_ids)
             return torch_functional.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
+                logits.float().reshape(-1, logits.size(-1)),
                 labels.reshape(-1),
                 ignore_index=-100,
             )
@@ -78,9 +89,51 @@ class BenchmarkModule(lightning.LightningModule):
         labels = batch[:, 1:].contiguous()
         logits = self.model(input_ids)
         return torch_functional.cross_entropy(
-            logits.reshape(-1, logits.size(-1)),
+            logits.float().reshape(-1, logits.size(-1)),
             labels.reshape(-1),
         )
+
+    def _check_nan_loss(self, loss: torch.Tensor, step: int) -> None:
+        """Dump per-parameter diagnostics to stdout when loss is NaN or Inf.
+
+        Uses ``print()`` rather than the logger so messages appear in Modal
+        container logs even if the logging handler is not configured.
+
+        Args:
+            loss: The scalar loss tensor to inspect.
+            step: Current global step (for log prefix).
+
+        Returns:
+            None.
+        """
+        if not (torch.isnan(loss) or torch.isinf(loss)):
+            return
+        tag = "NaN" if torch.isnan(loss) else "Inf"
+        print(f"\n[DIAG step={step}] *** {tag} LOSS DETECTED (value={loss.item()}) ***")
+        print(f"[DIAG step={step}] Scanning all named parameters for bad values...")
+        bad_params: list[str] = []
+        for name, param in self.named_parameters():
+            if param is None:
+                continue
+            pf = param.detach().float()
+            has_nan = pf.isnan().any().item()
+            has_inf = pf.isinf().any().item()
+            stats = (
+                f"  param  {name}: "
+                f"shape={tuple(param.shape)} dtype={param.dtype} "
+                f"min={pf.min().item():.4g} max={pf.max().item():.4g} "
+                f"mean={pf.mean().item():.4g} nan={has_nan} inf={has_inf}"
+            )
+            if has_nan or has_inf:
+                bad_params.append(name)
+                print(f"[DIAG step={step}] *** {stats}")
+            else:
+                print(f"[DIAG step={step}] {stats}")
+        if bad_params:
+            print(f"[DIAG step={step}] BAD parameters: {bad_params}")
+        else:
+            print(f"[DIAG step={step}] All parameters look clean — NaN may originate in activations/ops.")
+        print(f"[DIAG step={step}] *** end of parameter dump ***\n")
 
     def training_step(
         self,
@@ -97,6 +150,8 @@ class BenchmarkModule(lightning.LightningModule):
             Training loss.
         """
         ce_loss = self._loss_from_batch(batch)
+        # Diagnostic: dump parameter stats to stdout on NaN/Inf so Modal logs capture it.
+        self._check_nan_loss(ce_loss, step=self.global_step)
         loss = ce_loss
         if self._vega_cell is not None:
             alpha = torch.sigmoid(self._vega_cell.decay)
@@ -105,7 +160,13 @@ class BenchmarkModule(lightning.LightningModule):
                 loss = ce_loss - reg
                 self.log("train/vega_reg", reg.detach(), on_step=True)
         self.log("train/loss", ce_loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("train/ppl", torch.exp(ce_loss.detach()), on_step=True, on_epoch=False)
+        self.log(
+            "train/ppl",
+            torch.exp(ce_loss.detach().clamp(max=20.0)),
+            on_step=True,
+            on_epoch=False,
+        )
+        self._log_needle_accuracy(batch, "train")
         self._log_rr_gates()
         return loss
 
@@ -125,7 +186,14 @@ class BenchmarkModule(lightning.LightningModule):
         """
         loss = self._loss_from_batch(batch)
         self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("val/ppl", torch.exp(loss.detach()), on_step=False, on_epoch=True, sync_dist=True)
+        self.log(
+            "val/ppl",
+            torch.exp(loss.detach().clamp(max=20.0)),
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True,
+        )
+        self._log_needle_accuracy(batch, "val")
 
     def configure_optimizers(self) -> dict[str, Any]:
         """Build AdamW with cosine warmup scheduling.
@@ -192,6 +260,44 @@ class BenchmarkModule(lightning.LightningModule):
         """
         total_norm = torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=float("inf"))
         self.log("grad/global_norm", total_norm, on_step=True, prog_bar=False)
+        # Diagnostic: warn in stdout if any gradient is already NaN/Inf before clipping.
+        if torch.isnan(total_norm) or torch.isinf(total_norm):
+            print(f"\n[DIAG step={self.global_step}] *** NaN/Inf GRADIENT NORM ({total_norm.item()}) ***")
+            for name, param in self.named_parameters():
+                if param.grad is None:
+                    continue
+                gf = param.grad.detach().float()
+                if gf.isnan().any() or gf.isinf().any():
+                    print(
+                        f"[DIAG step={self.global_step}]   BAD grad  {name}: "
+                        f"min={gf.min().item():.4g} max={gf.max().item():.4g} "
+                        f"nan={gf.isnan().any().item()} inf={gf.isinf().any().item()}"
+                    )
+            print(f"[DIAG step={self.global_step}] *** end of gradient dump ***\n")
+
+    def _log_needle_accuracy(
+        self,
+        batch: torch.Tensor | tuple[torch.Tensor, torch.Tensor],
+        prefix: str,
+    ) -> None:
+        """Log token accuracy on masked (needle) positions when the batch is a (tokens, targets) tuple.
+
+        Only logs when targets contain ``-100`` entries (the DeepNeedle ignore index),
+        indicating a synthetic depth-needle task.  Standard LM batches are no-ops.
+        """
+        if not isinstance(batch, (tuple, list)):
+            return
+        _, targets = batch
+        mask = targets != -100
+        if not mask.any():
+            return
+        logits = self.model(batch[0])
+        preds = logits.argmax(dim=-1)
+        correct = (preds[mask] == targets[mask]).float().sum()
+        total = mask.float().sum()
+        if total > 0:
+            self.log(f"{prefix}/needle_acc", correct / total, on_step=True, on_epoch=True,
+                     prog_bar=True)
 
     def _log_rr_gates(self) -> None:
         """Log RR diagnostics when the model exposes them.
@@ -355,7 +461,12 @@ def run_benchmark(cfg: DictConfig, benchmark_name: str, residual_mode: str, run_
 
     datamodule = build_datamodule(cfg)
     module = BenchmarkModule(cfg.model, cfg.trainer)
-    if bool(cfg.get("compile", False)):
+    precision = str(cfg.trainer.get("precision", ""))
+    use_compile = bool(cfg.get("compile", False))
+    if use_compile and "bf16" in precision:
+        log.warning("Disabling torch.compile: unstable with bf16-mixed in this stack.")
+        use_compile = False
+    if use_compile:
         log.info("Compiling model using torch.compile...")
         module.model = torch.compile(module.model)
     batch_size = int(cfg.data.batch_size)
@@ -401,6 +512,7 @@ def run_benchmark(cfg: DictConfig, benchmark_name: str, residual_mode: str, run_
             cfg.benchmark.get("val_check_interval", 500),
         ),
         gradient_clip_val=float(cfg.trainer.get("gradient_clip_val", 1.0)),
+        accumulate_grad_batches=int(cfg.trainer.get("accumulate_grad_batches", 1)),
         default_root_dir=str(run_dir(benchmark_name, residual_mode, run_id)),
     )
 

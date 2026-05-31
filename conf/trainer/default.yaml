@@ -28,3 +28,18 @@ scheduler:
   name: cosine
   warmup_steps: 2000
   min_lr_ratio: 0.1            # final LR = 0.1 × peak_lr
+
+# ── FSDP (multi-GPU / multi-node) ─────────────────────────────────────────
+# Set strategy: fsdp in the CLI override and use TransformerDecoder's
+# get_fsdp_wrap_policy() to wrap each TransformerLayer individually while
+# leaving weight-tied depth cells (rr_cell, vega_cell) unwrapped.
+#
+# Example Lightning launch:
+#   python src/train.py model=vega trainer.strategy=fsdp \
+#       trainer.strategy.use_orig_params=true \
+#       trainer.strategy.auto_wrap_policy=null
+#
+# For FSDP2 (torch>=2.4), use strategy=fsdp2 and wrap layers with fully_shard.
+fsdp:
+  use_orig_params: true          # required for AdamW fused, gradient norm logging
+  auto_wrap_policy: null         # set via TransformerDecoder.get_fsdp_wrap_policy()

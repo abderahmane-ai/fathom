@@ -40,6 +40,7 @@ data:
   tokenizer_name: gpt2
   max_seq_len: 128
   batch_size: 128
+  batch_size_block_attnres: 32  # BlockAttnRes O(L^2) memory; accum matches 128
   num_workers: 4
   tokenization_num_proc: 4
   packed_cache_dir: null
@@ -59,7 +60,7 @@ trainer:
     warmup_steps: 200
     min_lr_ratio: 0.1
   optimizer:
-    lr: 4.0e-4
+    lr: 3.0e-4
     weight_decay: 0.1
     betas: [0.9, 0.95]
 
@@ -73,7 +74,7 @@ benchmark:
   status_every_n_steps: 100
   log_every_n_steps: 50
   save_top_k: 2
-  resume: true
+  resume: false
 
 wandb:
   enabled: false

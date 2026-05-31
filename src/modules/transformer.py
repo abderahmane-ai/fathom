@@ -10,15 +10,27 @@ Supports five residual modes selectable via ``config.residual_mode``:
 
 from __future__ import annotations
 
+import functools
 from typing import Any
 
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 
 from .norm import RMSNorm
 from .recurrent_residual import RecurrentResidualCell
 from .transformer_layer import TransformerLayer
 from .vega import VEGACell
+
+
+def _forward_attnres_layer(
+    layer: nn.Module,
+    blocks: list[torch.Tensor],
+    partial_block: torch.Tensor,
+    layer_idx: int,
+) -> tuple[list[torch.Tensor], torch.Tensor]:
+    """Checkpoint-friendly wrapper for one BlockAttnRes layer."""
+    return layer.forward_attnres(blocks, partial_block, layer_idx)
 
 
 class TransformerDecoder(nn.Module):
@@ -34,6 +46,7 @@ class TransformerDecoder(nn.Module):
     def __init__(self, config: Any) -> None:
         super().__init__()
         self.residual_mode: str = config.residual_mode
+        self.grad_checkpointing: bool = bool(getattr(config, "grad_checkpointing", False))
 
         self.token_embeddings = nn.Embedding(config.vocab_size, config.d_model)
         self.emb_drop = nn.Dropout(getattr(config, "dropout", 0.1))
@@ -157,7 +170,17 @@ class TransformerDecoder(nn.Module):
             blocks: list[torch.Tensor] = [h]
             partial_block: torch.Tensor = h
             for idx, layer in enumerate(self.layers):
-                blocks, partial_block = layer.forward_attnres(blocks, partial_block, idx)
+                if self.training and self.grad_checkpointing:
+                    blocks, partial_block = checkpoint(
+                        _forward_attnres_layer,
+                        layer,
+                        blocks,
+                        partial_block,
+                        idx,
+                        use_reentrant=False,
+                    )
+                else:
+                    blocks, partial_block = layer.forward_attnres(blocks, partial_block, idx)
             h = partial_block
 
         elif self.residual_mode == "full_attnres":
@@ -171,3 +194,31 @@ class TransformerDecoder(nn.Module):
 
         h = self.ln_f(h)
         return self.lm_head(h)
+
+    def get_fsdp_wrap_policy(self, modules_to_wrap: set[type] | None = None) -> Any:
+        """Return a ``transformer_auto_wrap_policy`` suitable for FSDP1.
+
+        Wraps each ``TransformerLayer`` individually while ignoring the tiny
+        weight-tied cells (``rr_cell``, ``vega_cell``) — they are shared across
+        all layers and FSDP handles parameter sharing safely.  Leaving them
+        unwrapped avoids unnecessary communication overhead for their small
+        O(d) parameter count.
+
+        For FSDP2, use ``fully_shard`` directly on each layer; the shared cells
+        are automatically handled.
+
+        Args:
+            modules_to_wrap: Additional module types to wrap.  Defaults to
+                ``{TransformerLayer}``.
+
+        Returns:
+            A callable wrapping policy for ``torch.distributed.fsdp``.
+        """
+        from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+
+        if modules_to_wrap is None:
+            modules_to_wrap = {TransformerLayer}
+        return functools.partial(
+            transformer_auto_wrap_policy,
+            transformer_layer_cls=modules_to_wrap,
+        )

@@ -23,4 +23,8 @@ class RMSNorm(nn.Module):
         self.scale = nn.Parameter(torch.ones(d))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.scale * x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+        # Full fp32 norm; casting only the output avoids bf16 underflow in mean/rsqrt.
+        dtype = x.dtype
+        x_f32 = x.float()
+        rms = torch.rsqrt(x_f32.pow(2).mean(-1, keepdim=True) + self.eps)
+        return (self.scale.float() * x_f32 * rms).to(dtype)

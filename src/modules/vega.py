@@ -45,6 +45,7 @@ import torch.nn.functional as F
 from .norm import RMSNorm
 
 _VECTOR_STATE_MAX_R_HEAD: int = 64
+_MATRIX_STATE_CHUNK_S: int = 256
 
 
 class _ParameterFreeRMSNorm(nn.Module):
@@ -55,7 +56,10 @@ class _ParameterFreeRMSNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        dtype = x.dtype
+        x_f32 = x.float()
+        rms = torch.rsqrt(x_f32.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return (x_f32 * rms).to(dtype)
 
 
 class VEGACell(nn.Module):
@@ -240,33 +244,32 @@ class VEGACell(nn.Module):
         K_dep = K
 
         # Normalize and scale query and key vectors before the positive feature map.
-        K_scale = torch.rsqrt(K_dep.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-        K_dep = K_dep * K_scale / (self.r_head ** 0.5)
+        # Compute norms in float32 to prevent underflow in bfloat16.
+        K_dep_f32 = K_dep.float()
+        K_scale = torch.rsqrt(K_dep_f32.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        K_dep = (K_dep_f32 * K_scale / (self.r_head ** 0.5)).to(K_dep.dtype)
 
-        Q_scale = torch.rsqrt(Q_dep.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-        Q_dep = Q_dep * Q_scale / (self.r_head ** 0.5)
+        Q_dep_f32 = Q_dep.float()
+        Q_scale = torch.rsqrt(Q_dep_f32.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        Q_dep = (Q_dep_f32 * Q_scale / (self.r_head ** 0.5)).to(Q_dep.dtype)
 
         # Positive feature map φ(x) = ELU(x) + 1 (ensures state positivity).
         K_phi = (F.elu(K_dep) + 1.0).float()
         Q_phi = (F.elu(Q_dep) + 1.0).float()
 
-        # Linear-attention retrieval.
+        # Linear-attention retrieval (fp32; bf16 cast before norm can overflow).
+        # Use den + eps, not clamp(min=eps): clamping lets c explode when z is tiny but S is not.
         if self.use_vector_state:
-            # Vector state: S_prev is (B, Seq, n_heads, r_head).
-            # Computes element-wise retrieval c_i = (Q_i * S_i) / sum(Q_j * z_j).
             num = Q_phi * S_prev.float()
-            den = (Q_phi * z_prev.float()).sum(-1, keepdim=True).clamp(min=self.eps)
-            c = (num / den).to(y.dtype)
+            den = (Q_phi * z_prev.float()).sum(-1, keepdim=True) + self.eps
+            c = (num / den).clamp(-1e4, 1e4)
         else:
-            # Matrix state: S_prev is (B, Seq, n_heads, r_head, r_head).
-            # Computes matrix retrieval c = (Q^T * S) / (Q^T * z).
             num = torch.matmul(Q_phi.unsqueeze(-2), S_prev.float()).squeeze(-2)
-            den = (Q_phi * z_prev.float()).sum(-1, keepdim=True).clamp(min=self.eps)
-            c = (num / den).to(y.dtype)
+            den = (Q_phi * z_prev.float()).sum(-1, keepdim=True) + self.eps
+            c = (num / den).clamp(-1e4, 1e4)
 
-        # Single output projection and RMSNorm.
         c_flat = c.contiguous().view(B, Seq, self.rank)
-        c_out = self.out_proj(self.norm_c(c_flat))
+        c_out = self.out_proj(self.norm_c(c_flat).to(y.dtype))
 
         # Single read gate and damp gate.
         read_gate = torch.sigmoid(self.read_proj_up(self.read_proj_down(y_norm)))
@@ -282,8 +285,17 @@ class VEGACell(nn.Module):
         if self.use_vector_state:
             S_new = decay * S_prev + K_phi * (g * V.float())
         else:
-            outer = K_phi.unsqueeze(-1) * (g * V.float()).unsqueeze(-2)
-            S_new = decay.unsqueeze(-1) * S_prev + outer
+            # Chunked outer product to cap peak memory for large r_head / S.
+            # Without chunking, the intermediate (B, S, H, r_head, r_head) tensor
+            # consumes ~4.2 GB for B=8, S=2048, H=32, r_head=128.  Chunking over
+            # the sequence dimension limits the peak to O(chunk_size * r_head^2).
+            S_new = decay.unsqueeze(-1) * S_prev
+            for s_start in range(0, Seq, _MATRIX_STATE_CHUNK_S):
+                s_end = min(s_start + _MATRIX_STATE_CHUNK_S, Seq)
+                K_chunk = K_phi[:, s_start:s_end]
+                V_chunk = (g[:, s_start:s_end] * V[:, s_start:s_end].float())
+                outer_chunk = K_chunk.unsqueeze(-1) * V_chunk.unsqueeze(-2)
+                S_new[:, s_start:s_end] += outer_chunk
         z_new = decay * z_prev + K_phi
 
         return h_new, (S_new, z_new)

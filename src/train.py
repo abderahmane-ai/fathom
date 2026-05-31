@@ -28,6 +28,17 @@ _VEGA_DECAY_VAR_REG_WEIGHT: float = 0.001
 log = logging.getLogger(__name__)
 
 
+def _tensor_stats(t: torch.Tensor, name: str) -> str:
+    """Return a compact diagnostic string for a tensor."""
+    tf = t.detach().float()
+    return (
+        f"{name}: shape={tuple(t.shape)} dtype={t.dtype} "
+        f"min={tf.min().item():.4g} max={tf.max().item():.4g} "
+        f"mean={tf.mean().item():.4g} "
+        f"nan={tf.isnan().any().item()} inf={tf.isinf().any().item()}"
+    )
+
+
 class LanguageModel(L.LightningModule):
     """LightningModule wrapping TransformerDecoder for causal LM training.
 
@@ -46,18 +57,63 @@ class LanguageModel(L.LightningModule):
         n_params = sum(p.numel() for p in self.model.parameters())
         log.info("Initialized model with %s M parameters", f"{n_params / 1e6:.1f}")
 
-    def _compute_loss(self, batch: torch.Tensor) -> torch.Tensor:
-        """Computes next-token cross-entropy loss on shifted inputs."""
+    def _compute_loss(
+        self, batch: torch.Tensor | tuple[torch.Tensor, torch.Tensor]
+    ) -> torch.Tensor:
+        """Computes next-token cross-entropy loss on shifted or pre-split inputs."""
+        if isinstance(batch, (tuple, list)):
+            input_ids, labels = batch
+            logits = self.model(input_ids)
+            return F.cross_entropy(
+                logits.float().view(-1, logits.size(-1)),
+                labels.view(-1),
+                ignore_index=-100,
+            )
         input_ids = batch[:, :-1].contiguous()
         labels = batch[:, 1:].contiguous()
         logits = self.model(input_ids)
         return F.cross_entropy(
-            logits.view(-1, logits.size(-1)),
+            logits.float().view(-1, logits.size(-1)),
             labels.view(-1),
         )
 
+    def _check_nan_loss(self, loss: torch.Tensor, step: int) -> None:
+        """Dump per-parameter diagnostics to stdout when loss is NaN or Inf.
+
+        Uses ``print()`` rather than the logger so messages appear in container logs.
+        """
+        if not (torch.isnan(loss) or torch.isinf(loss)):
+            return
+        tag = "NaN" if torch.isnan(loss) else "Inf"
+        print(f"\n[DIAG step={step}] *** {tag} LOSS DETECTED (value={loss.item()}) ***")
+        print(f"[DIAG step={step}] Scanning all named parameters for bad values...")
+        bad_params: list[str] = []
+        for name, param in self.named_parameters():
+            if param is None:
+                continue
+            pf = param.detach().float()
+            has_nan = pf.isnan().any().item()
+            has_inf = pf.isinf().any().item()
+            stats = (
+                f"  param  {name}: "
+                f"shape={tuple(param.shape)} dtype={param.dtype} "
+                f"min={pf.min().item():.4g} max={pf.max().item():.4g} "
+                f"mean={pf.mean().item():.4g} nan={has_nan} inf={has_inf}"
+            )
+            if has_nan or has_inf:
+                bad_params.append(name)
+                print(f"[DIAG step={step}] *** {stats}")
+            else:
+                print(f"[DIAG step={step}] {stats}")
+        if bad_params:
+            print(f"[DIAG step={step}] BAD parameters: {bad_params}")
+        else:
+            print(f"[DIAG step={step}] All parameters look clean — NaN may originate in activations/ops.")
+        print(f"[DIAG step={step}] *** end of parameter dump ***\n")
+
     def training_step(self, batch: torch.Tensor, _batch_idx: int) -> torch.Tensor:
         ce_loss = self._compute_loss(batch)
+        self._check_nan_loss(ce_loss, step=self.global_step)
         loss = ce_loss
         if self._vega_cell is not None:
             alpha = torch.sigmoid(self._vega_cell.decay)
@@ -66,13 +122,17 @@ class LanguageModel(L.LightningModule):
                 loss = ce_loss - reg
                 self.log("train/vega_reg", reg.detach(), on_step=True)
         self.log("train/loss", ce_loss, on_step=True, on_epoch=False, prog_bar=True)
-        self.log("train/ppl", torch.exp(ce_loss.detach()), on_step=True, on_epoch=False)
+        self.log("train/ppl", torch.exp(ce_loss.detach().clamp(max=20.0)), on_step=True, on_epoch=False)
+        self._log_needle_accuracy(batch, "train")
         return loss
 
-    def validation_step(self, batch: torch.Tensor, _batch_idx: int) -> None:
+    def validation_step(
+        self, batch: torch.Tensor | tuple[torch.Tensor, torch.Tensor], _batch_idx: int
+    ) -> None:
         loss = self._compute_loss(batch)
         self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("val/ppl", torch.exp(loss), on_step=False, on_epoch=True, sync_dist=True)
+        self._log_needle_accuracy(batch, "val")
 
     def test_step(self, batch: torch.Tensor, _batch_idx: int) -> None:
         loss = self._compute_loss(batch)
@@ -90,6 +150,44 @@ class LanguageModel(L.LightningModule):
         """
         total_norm = torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=float("inf"))
         self.log("grad/global_norm", total_norm, on_step=True)
+        # Diagnostic: warn in stdout if any gradient is already NaN/Inf before clipping.
+        if torch.isnan(total_norm) or torch.isinf(total_norm):
+            print(f"\n[DIAG step={self.global_step}] *** NaN/Inf GRADIENT NORM ({total_norm.item()}) ***")
+            for name, param in self.named_parameters():
+                if param.grad is None:
+                    continue
+                gf = param.grad.detach().float()
+                if gf.isnan().any() or gf.isinf().any():
+                    print(
+                        f"[DIAG step={self.global_step}]   BAD grad  {name}: "
+                        f"min={gf.min().item():.4g} max={gf.max().item():.4g} "
+                        f"nan={gf.isnan().any().item()} inf={gf.isinf().any().item()}"
+                    )
+            print(f"[DIAG step={self.global_step}] *** end of gradient dump ***\n")
+
+    def _log_needle_accuracy(
+        self,
+        batch: torch.Tensor | tuple[torch.Tensor, torch.Tensor],
+        prefix: str,
+    ) -> None:
+        """Log token accuracy on masked (needle) positions for DeepNeedle batches.
+
+        No-op for standard LM batches (plain tensors).
+        """
+        if not isinstance(batch, (tuple, list)):
+            return
+        _, targets = batch
+        mask = targets != -100
+        if not mask.any():
+            return
+        with torch.no_grad():
+            logits = self.model(batch[0])
+            preds = logits.argmax(dim=-1)
+            correct = (preds[mask] == targets[mask]).float().sum()
+            total = mask.float().sum()
+        if total > 0:
+            self.log(f"{prefix}/needle_acc", correct / total, on_step=True, on_epoch=True,
+                     prog_bar=True)
 
     # pyrefly: ignore [bad-override]
     def configure_optimizers(self) -> dict[str, Any]:
@@ -178,7 +276,12 @@ def main(cfg: DictConfig) -> None:
     log.info("Training Configuration:\n%s", OmegaConf.to_yaml(cfg))
 
     model = LanguageModel(cfg.model, cfg.trainer)
-    if bool(cfg.get("compile", False)):
+    precision = str(cfg.trainer.get("precision", ""))
+    use_compile = bool(cfg.get("compile", False))
+    if use_compile and "bf16" in precision:
+        log.warning("Disabling torch.compile: unstable with bf16-mixed in this stack.")
+        use_compile = False
+    if use_compile:
         log.info("Compiling model using torch.compile...")
         model.model = torch.compile(model.model)
     datamodule = LanguageModelDataModule(cfg.data)

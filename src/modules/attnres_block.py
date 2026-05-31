@@ -40,8 +40,10 @@ class BlockAttnRes(nn.Module):
         self.norm_scale:   nn.Parameter = nn.Parameter(torch.ones(d_model))
 
     def _rms_norm(self, x: torch.Tensor) -> torch.Tensor:
-        rms = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-        return self.norm_scale * (x * rms)
+        dtype = x.dtype
+        x_f32 = x.float()
+        rms = torch.rsqrt(x_f32.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return (self.norm_scale.float() * x_f32 * rms).to(dtype)
 
     def forward(
         self,
@@ -90,8 +92,10 @@ class FullAttnRes(nn.Module):
         self.norm_scale:   nn.Parameter = nn.Parameter(torch.ones(d_model))
 
     def _rms_norm(self, x: torch.Tensor) -> torch.Tensor:
-        rms = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-        return self.norm_scale * (x * rms)
+        dtype = x.dtype
+        x_f32 = x.float()
+        rms = torch.rsqrt(x_f32.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return (self.norm_scale.float() * x_f32 * rms).to(dtype)
 
     def forward(self, states: list[torch.Tensor]) -> torch.Tensor:
         """Aggregate all previous depth states.

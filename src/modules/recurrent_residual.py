@@ -35,7 +35,10 @@ class _MemoryNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        dtype = x.dtype
+        x_f32 = x.float()
+        rms = torch.rsqrt(x_f32.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return (x_f32 * rms).to(dtype)
 
 
 class RecurrentResidualCell(nn.Module):
@@ -174,6 +177,7 @@ class RecurrentResidualCell(nn.Module):
             ``(h_new, m_new)`` — updated hidden state and memory.
         """
         position = self._sublayer_position(layer_idx, sublayer)
+        m = m.float()
         m_norm = self.memory_norm(m)
         y_norm = self.y_norm(y)
 
@@ -184,6 +188,6 @@ class RecurrentResidualCell(nn.Module):
 
         memory_read = self.memory_gain * self.memory_out(m_norm)
         h_new = damp_gate * h_prev + y + read_gate * memory_read
-        m_new = forget_gate * m + update_gate * torch.tanh(y)
+        m_new = forget_gate.float() * m + update_gate.float() * torch.tanh(y).float()
 
         return h_new, m_new
