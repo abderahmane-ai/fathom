@@ -126,12 +126,20 @@ class VEGACell(nn.Module):
         # Per-sublayer depth biases — query bias only (Lean VEGA* Cut 4).
         self.query_bias = nn.Parameter(torch.zeros(self.num_sublayers, n_heads, self.r_head))
 
-        # Decay logits for the EMA. Spaced log-linearly (linearly in logit space).
+        # Decay logits for the EMA. Spaced log-linearly within head groups (Lean VEGA*).
         self.decay = nn.Parameter(torch.empty(self.num_sublayers, n_heads, self.r_head))
+        n_slow_heads = n_heads - n_fast_heads
         with torch.no_grad():
-            for pos in range(self.num_sublayers):
-                logits = torch.linspace(0.0, slow_decay_range[1], self.rank)
-                self.decay[pos].copy_(logits.view(self.n_heads, self.r_head))
+            fast_logits = torch.linspace(
+                fast_decay_range[0], fast_decay_range[1], n_fast_heads * self.r_head
+            )
+            slow_logits = torch.linspace(
+                slow_decay_range[0], slow_decay_range[1], n_slow_heads * self.r_head
+            )
+            all_logits = torch.cat([fast_logits, slow_logits])
+            self.decay.copy_(all_logits.view(1, self.n_heads, self.r_head).expand(
+                self.num_sublayers, -1, -1
+            ))
 
         # Orthogonal init for the EMA projections — improves conditioning of the state.
         with torch.no_grad():
@@ -235,12 +243,14 @@ class VEGACell(nn.Module):
 
         # Linear-attention retrieval.
         if self.use_vector_state:
-            # Vector state: S_prev is (B, Seq, n_heads, r_head)
+            # Vector state: S_prev is (B, Seq, n_heads, r_head).
+            # Computes element-wise retrieval c_i = (Q_i * S_i) / sum(Q_j * z_j).
             num = Q_phi * S_prev.float()
             den = (Q_phi * z_prev.float()).sum(-1, keepdim=True).clamp(min=self.eps)
             c = (num / den).to(y.dtype)
         else:
-            # Matrix state: S_prev is (B, Seq, n_heads, r_head, r_head)
+            # Matrix state: S_prev is (B, Seq, n_heads, r_head, r_head).
+            # Computes matrix retrieval c = (Q^T * S) / (Q^T * z).
             num = torch.matmul(Q_phi.unsqueeze(-2), S_prev.float()).squeeze(-2)
             den = (Q_phi * z_prev.float()).sum(-1, keepdim=True).clamp(min=self.eps)
             c = (num / den).to(y.dtype)
@@ -256,6 +266,9 @@ class VEGACell(nn.Module):
         h_new = damp * h_prev + y + read_gate * c_out
 
         # EMA state update.
+        # Note: decay has shape (1, 1, n_heads, r_head). In matrix state, we unsqueeze
+        # it to decay.unsqueeze(-1) of shape (1, 1, n_heads, r_head, 1) to match S_prev.
+        # z_prev is always a vector and matches decay directly.
         decay = torch.sigmoid(self.decay[pos]).view(1, 1, self.n_heads, self.r_head)
         if self.use_vector_state:
             S_new = decay * S_prev + K_phi * (g * V.float())
