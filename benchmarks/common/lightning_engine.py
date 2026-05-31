@@ -161,7 +161,7 @@ class BenchmarkModule(lightning.LightningModule):
             param_groups,
             lr=float(opt_cfg.lr),
             betas=tuple(opt_cfg.get("betas", [0.9, 0.95])),
-            fused=torch.cuda.is_available(),
+            fused=False,
         )
         total_steps = max(1, int(self.trainer.estimated_stepping_batches))
         warmup_steps = int(sch_cfg.warmup_steps)
