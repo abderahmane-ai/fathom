@@ -67,11 +67,11 @@ For a model with $L$ layers and $S = 2L$ sublayers, depth biases add $4 \times S
 ## 4. VEGA — Vertical EMA Gated Attention
 
 VEGA maintains a **linear-attention EMA state** per token that accumulates key-value products
-across depth. Under the optimized **Lean VEGA*** design, the state size is conditional on the
-head rank: it uses a **Vector State** $\mathbf{S} \in \mathbb{R}^{n_{\text{heads}} \times r_{\text{head}}}$
-($O(r)$ memory) if $r_{\text{head}} \le 64$ to eliminate cross-channel mixing overhead at small
-ranks, and falls back to a **Matrix State** $\mathbf{S} \in \mathbb{R}^{n_{\text{heads}} \times
-r_{\text{head}} \times r_{\text{head}}}$ ($O(r^2)$ memory) for $r_{\text{head}} \ge 128$.
+across depth. The state size is conditional on the head rank: it uses a **Vector State**
+$\mathbf{S} \in \mathbb{R}^{n_{\text{heads}} \times r_{\text{head}}}$ ($O(r)$ memory) if
+$r_{\text{head}} \le 64$ to eliminate cross-channel mixing overhead at small ranks, and falls
+back to a **Matrix State** $\mathbf{S} \in \mathbb{R}^{n_{\text{heads}} \times r_{\text{head}}
+\times r_{\text{head}}}$ ($O(r^2)$ memory) for $r_{\text{head}} \ge 128$.
 
 ### 4.1 Projections
 
@@ -79,7 +79,7 @@ Each sublayer projects the current output $\mathbf{y}$ into the EMA space:
 $$\mathbf{K} = \mathbf{W}_K \mathbf{y}, \quad \mathbf{V} = \mathbf{W}_V \mathbf{y},
 \quad \mathbf{Q} = \mathbf{W}_Q \mathbf{y}$$
 
-Per-sublayer depth query bias is added (Cut 4, key bias is removed):
+Per-sublayer depth query bias is added (key depth bias is omitted):
 $$\mathbf{Q}_{dep} = \mathbf{Q} + b_Q[pos], \quad \mathbf{K}_{dep} = \mathbf{K}$$
 
 To ensure numerical stability and prevent state growth, the query and key vectors are
@@ -106,9 +106,9 @@ $$c_\text{out} = \mathbf{W}_\text{out}(\text{RMSNorm}(c))$$
 
 ### 4.3 Hidden State Update
 
-Using a single read gate $\mathbf{r}$ and element-wise damp gate $\boldsymbol{\delta}$:
+Using a single low-rank read gate $\mathbf{r}$ and element-wise damp gate $\boldsymbol{\delta}$:
 
-$$\mathbf{r} = \sigma(\mathbf{W}_r \mathbf{y}), \quad \boldsymbol{\delta} =
+$$\mathbf{r} = \sigma(\mathbf{W}_\text{up} (\mathbf{W}_\text{down} \mathbf{y})), \quad \boldsymbol{\delta} =
 \sigma(\mathbf{w}_d \odot \mathbf{y} + \mathbf{b}_d)$$
 
 $$\mathbf{h}_\text{new} = \boldsymbol{\delta} \odot \mathbf{h}_\text{prev} +

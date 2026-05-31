@@ -32,6 +32,8 @@ from benchmarks.common.param_count import assert_model_under_cap, count_paramete
 from src.data import LanguageModelDataModule
 from src.modules import TransformerDecoder
 
+_VEGA_DECAY_VAR_REG_WEIGHT: float = 0.001
+
 log = logging.getLogger(__name__)
 
 
@@ -93,13 +95,14 @@ class BenchmarkModule(lightning.LightningModule):
             Training loss.
         """
         loss = self._loss_from_batch(batch)
-        # Add Cut 2 Variance Regularizer for VEGA if enabled.
+        # Encourage diversity in VEGA decay rates to preserve multi-scale depth coverage.
         if getattr(self.model, "residual_mode", None) == "vega":
             vega_cell = getattr(self.model, "vega_cell", None)
             if vega_cell is not None:
                 alpha = torch.sigmoid(vega_cell.decay)
                 if alpha.numel() > 1:
-                    loss = loss - 0.01 * alpha.var()
+                    reg_loss = _VEGA_DECAY_VAR_REG_WEIGHT * alpha.var(dim=-1).mean()
+                    loss = loss - reg_loss
         self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
         self.log("train/ppl", torch.exp(loss.detach()), on_step=True, on_epoch=False)
         self._log_rr_gates()

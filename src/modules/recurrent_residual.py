@@ -104,7 +104,6 @@ class RecurrentResidualCell(nn.Module):
 
         self.memory_norm = _MemoryNorm(d_model, eps=eps)
         self.memory_out  = nn.Linear(d_model, d_model, bias=False)
-        self.h_norm      = _MemoryNorm(d_model, eps=eps)  # kept for potential future use
         self.y_norm      = _MemoryNorm(d_model, eps=eps)
 
         # Low-rank weight init: tiny random weights so biases dominate at start.

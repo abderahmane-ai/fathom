@@ -75,6 +75,8 @@ class TransformerLayer(nn.Module):
                     rank=vega_cfg.rank,
                     n_heads=getattr(vega_cfg, "n_heads", 4),
                     n_fast_heads=getattr(vega_cfg, "n_fast_heads", 2),
+                    fast_decay_range=tuple(getattr(vega_cfg, "fast_decay_range", (0.0, 1.2))),
+                    slow_decay_range=tuple(getattr(vega_cfg, "slow_decay_range", (2.0, 4.5))),
                     read_gate_bias=vega_cfg.read_gate_bias,
                     write_gate_bias=getattr(vega_cfg, "write_gate_bias", -2.0),
                     damp_gate_bias=getattr(vega_cfg, "damp_gate_bias", 3.0),

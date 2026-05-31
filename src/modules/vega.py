@@ -1,11 +1,11 @@
 """VEGA — Vertical EMA Gated Attention.
 
 Depth memory cell that maintains a linear-attention EMA state across layers.
-Under Lean VEGA*, the state size is conditional: it uses a Vector State if r_head <= 64,
-and falls back to a Matrix State for larger ranks.
+The state size is conditional on head rank: vector state when r_head ≤ _VECTOR_STATE_MAX_R_HEAD,
+matrix state otherwise.
 
 Math (per sublayer at depth position pos):
-    y_norm = RMSNorm(y)
+    y_norm = ParameterFreeRMSNorm(y)   -- no learnable scale
     K  = key_proj(y_norm),   V  = val_proj(y_norm),  Q  = query_proj(y_norm)
     g  = σ(write_gate(y_norm))                  -- write gate
 
@@ -43,6 +43,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .norm import RMSNorm
+
+_VECTOR_STATE_MAX_R_HEAD: int = 64
 
 
 class _ParameterFreeRMSNorm(nn.Module):
@@ -104,16 +106,19 @@ class VEGACell(nn.Module):
         self.eps = eps
         self.y_norm = _ParameterFreeRMSNorm(eps=eps)
 
-        # Conditional state type based on head rank (Lean VEGA*)
-        self.use_vector_state = (self.r_head <= 64)
+        # Use vector state for small head ranks; matrix state for larger ranks.
+        self.use_vector_state = (self.r_head <= _VECTOR_STATE_MAX_R_HEAD)
 
         # Projections into the rank-dimensional EMA space.
         # Fused Q, K, V projection to reduce GPU kernel launch overhead.
         self.qkv_proj = nn.Linear(d_model, 3 * rank, bias=False)
         self.write_gate = nn.Linear(d_model, rank, bias=True)
 
-        # Single read gate projection.
-        self.read_proj = nn.Linear(d_model, d_model, bias=True)
+        # Single low-rank read gate projection.
+        _read_rank = max(32, d_model // 16)
+        self.read_rank = _read_rank
+        self.read_proj_down = nn.Linear(d_model, _read_rank, bias=False)
+        self.read_proj_up   = nn.Linear(_read_rank, d_model, bias=True)
 
         # Element-wise damp gate: σ(damp_weight ⊙ y + damp_bias).
         self.damp_weight = nn.Parameter(torch.empty(d_model))
@@ -123,10 +128,12 @@ class VEGACell(nn.Module):
         self.out_proj = nn.Linear(rank, d_model, bias=False)
         self.norm_c = RMSNorm(rank, eps=eps)
 
-        # Per-sublayer depth biases — query bias only (Lean VEGA* Cut 4).
+        # Per-sublayer query depth bias only. Key depth bias is omitted; query bias alone is
+        # sufficient for read selectivity.
         self.query_bias = nn.Parameter(torch.zeros(self.num_sublayers, n_heads, self.r_head))
 
-        # Decay logits for the EMA. Spaced log-linearly within head groups (Lean VEGA*).
+        # Decay logits initialized log-linearly: fast heads cover short horizons, slow heads
+        # cover long horizons.
         self.decay = nn.Parameter(torch.empty(self.num_sublayers, n_heads, self.r_head))
         n_slow_heads = n_heads - n_fast_heads
         with torch.no_grad():
@@ -155,8 +162,9 @@ class VEGACell(nn.Module):
         nn.init.normal_(self.write_gate.weight, 0.0, gate_init_std)
         self.write_gate.bias.data.fill_(write_gate_bias)
 
-        nn.init.normal_(self.read_proj.weight, 0.0, gate_init_std)
-        self.read_proj.bias.data.fill_(read_gate_bias)
+        nn.init.normal_(self.read_proj_down.weight, 0.0, gate_init_std)
+        nn.init.normal_(self.read_proj_up.weight, 0.0, gate_init_std)
+        self.read_proj_up.bias.data.fill_(read_gate_bias)
 
         nn.init.normal_(self.damp_weight, 0.0, gate_init_std)
 
@@ -165,7 +173,7 @@ class VEGACell(nn.Module):
 
     @property
     def key_proj(self) -> nn.Linear:
-        """Alias for qkv_proj (kept for device lookup in tests)."""
+        """Alias for the fused QKV projection (backward-compatible name used in tests)."""
         return self.qkv_proj
 
     def get_initial_state(
@@ -224,9 +232,10 @@ class VEGACell(nn.Module):
         K = K.view(B, Seq, self.n_heads, self.r_head)
         V = V.view(B, Seq, self.n_heads, self.r_head)
         Q = Q.view(B, Seq, self.n_heads, self.r_head)
-        g = torch.sigmoid(self.write_gate(y_norm)).view(B, Seq, self.n_heads, self.r_head)
+        g = torch.sigmoid(self.write_gate(y_norm)).view(B, Seq, self.n_heads, self.r_head).float()
 
-        # Add per-sublayer query depth bias (Lean VEGA* Cut 4).
+        # Per-sublayer query depth bias only. Key depth bias is omitted; query bias alone is
+        # sufficient for read selectivity.
         Q_dep = Q + self.query_bias[pos].view(1, 1, self.n_heads, self.r_head)
         K_dep = K
 
@@ -260,20 +269,20 @@ class VEGACell(nn.Module):
         c_out = self.out_proj(self.norm_c(c_flat))
 
         # Single read gate and damp gate.
-        read_gate = torch.sigmoid(self.read_proj(y_norm))
+        read_gate = torch.sigmoid(self.read_proj_up(self.read_proj_down(y_norm)))
         damp = torch.sigmoid(self.damp_weight * y_norm + self.damp_bias)
 
         h_new = damp * h_prev + y + read_gate * c_out
 
         # EMA state update.
-        # Note: decay has shape (1, 1, n_heads, r_head). In matrix state, we unsqueeze
-        # it to decay.unsqueeze(-1) of shape (1, 1, n_heads, r_head, 1) to match S_prev.
-        # z_prev is always a vector and matches decay directly.
+        # decay: (1, 1, n_heads, r_head). For the matrix state, unsqueeze to
+        # (1, 1, n_heads, r_head, 1) to broadcast against S_prev's extra rank dim.
+        # z is always a vector regardless of state type.
         decay = torch.sigmoid(self.decay[pos]).view(1, 1, self.n_heads, self.r_head)
         if self.use_vector_state:
-            S_new = decay * S_prev + K_phi * (g * V.float())
+            S_new = decay * S_prev + K_phi * (g * V)
         else:
-            outer = K_phi.unsqueeze(-1) * (g * V.float()).unsqueeze(-2)
+            outer = K_phi.unsqueeze(-1) * (g * V).unsqueeze(-2)
             S_new = decay.unsqueeze(-1) * S_prev + outer
         z_new = decay * z_prev + K_phi
 
