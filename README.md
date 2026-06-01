@@ -1,19 +1,20 @@
 # Recurrent Residuals, VEGA, and Attention Residuals
 
-A controlled comparison of three depth-stream residual mechanisms for causal transformer language models.
+A controlled comparison of **five** depth-stream residual mechanisms for causal transformer language models, organized as a **design ladder** of progressively richer approximations of the same operation: *letting a layer reach back into the history of hidden states produced earlier in the depth stream.*
 
 ## What Is Being Compared
 
-Standard transformer residuals (`h = h + y`) accumulate every layer's output with equal weight, which dilutes early-layer signals in deep networks. This project benchmarks three alternatives against the standard baseline:
+Standard transformer residuals (`h = h + y`) accumulate every layer's output with equal weight, which dilutes early-layer signals in deep networks. This project benchmarks **five** mechanisms against the standard baseline:
 
-| Mechanism | Core Idea | Complexity per Layer |
-|---|---|---|
-| **Standard** | `h = h + y` | O(d) |
-| **Recurrent Residuals (RR)** | Gated depth-wise working memory shared across all layers | O(rank · d) |
-| **VEGA** | Multi-scale EMA depth memory with fast/slow head partition | O(rank · d) |
-| **Attention Residuals (AttnRes)** | Softmax aggregation over previous block states; [Moonshot AI, arXiv:2603.15031](https://arxiv.org/abs/2603.15031) | O(B · d) per block |
+| Rung | Mechanism | History representation | Complexity per Layer |
+|---:|---|---|---|
+| 0 | **Standard** | `h = h + y` (no history) | O(d) |
+| 1 | **Recurrent Residuals (RR)** | Single gated memory vector | O(rank · d) |
+| 2 | **VEGA** | Multi-head linear-attention state (depth-axis linear attention) | O(n_heads · r_head · d) |
+| 3 | **mHC** (Lite) | Parallel residual channels with learned pre/post mixing | O(m² · d) per sublayer |
+| 4 | **Attention Residuals (AttnRes)** | Softmax aggregation over previous block states; [Moonshot AI, arXiv:2603.15031](https://arxiv.org/abs/2603.15031) | O(B · d) per block |
 
-Full mathematical derivations for each mechanism are in [METHODOLOGY.md](METHODOLOGY.md).
+Rungs 1–4 form a cost/expressivity frontier: **VEGA is to AttnRes what RWKV is to softmax attention** — same query-conditioned retrieval idea, but a closed-form linear recurrence over a fixed-size state at $O(L)$ total cost instead of an explicit softmax at $O(L^2)$. mHC is included as an orthogonal concurrent-work baseline (parallel channels, not history aggregation). Full mathematical derivations and the design-ladder framing are in [METHODOLOGY.md](METHODOLOGY.md).
 
 ## Installation
 

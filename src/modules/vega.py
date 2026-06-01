@@ -1,5 +1,13 @@
 """VEGA — Vertical EMA Gated Attention.
 
+Linear attention run **vertically across depth**.  If AttnRes (Rung 4 of the
+design ladder, see METHODOLOGY.md §1.1) is "softmax-attention over depth at
+O(L²) cost", VEGA is the corresponding "linear-attention over depth at O(L)
+cost" — the depth-axis analog of how RWKV / GLA / Linear Transformers
+approximate softmax attention in the token axis.  The state is a
+multi-head linear-attention EMA `(S, z)` accumulated across sublayers; the
+retrieval is the standard linear-attention form ``c = φ(Q) S / φ(Q) z``.
+
 Depth memory cell that maintains a linear-attention EMA state across layers.
 The state size is conditional on head rank: vector state when r_head ≤ _VECTOR_STATE_MAX_R_HEAD,
 matrix state otherwise.
@@ -34,6 +42,22 @@ Math (per sublayer at depth position pos):
     # Else (Matrix State):
         S_new = α[..., None] * S_prev + φ(K_dep)[..., None] * (g * V)[..., None, :]
     z_new = α * z_prev + φ(K_dep)
+
+Design-ladder role (see METHODOLOGY.md §1.1, §4.6):
+    VEGA is **Rung 2** of the design ladder — the multi-head linear-attention
+    rung.  It is more expressive than RR (Rung 1) because the retrieval is
+    Q-conditioned, not a fixed projection; it is cheaper than AttnRes (Rung 4)
+    by replacing the softmax over the full history with a closed-form linear
+    recurrence over a fixed-size state.  In token-axis language: VEGA is to
+    AttnRes as RWKV is to softmax attention.
+
+Init contract (verified by tests/test_design_ladder.py::test_vega_zero_start_at_init):
+    out_proj.weight = 0 at init → c_out = 0 for any input.  Combined with
+    the read-gate bias of -3 (read_gate ≈ 0.047) and the damp-bias of +3
+    (damp ≈ 0.953), the cell produces h_new ≈ 0.953 · h_prev + y_l.  This
+    is the *soft* zero-start — strictly not equal to the standard residual,
+    but close enough that the first few hundred training steps are stable.
+    The state (S, z) is actively written but never read at step 0.
 """
 
 from __future__ import annotations

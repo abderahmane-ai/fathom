@@ -15,6 +15,30 @@ pre-mixed channels with the y-row adding to channel 0, so mHC reduces
 to standard Pre-LN residuals on channel 0 while channel 1 remains an
 untouched scratch state. Off-diagonal entries are learned during
 training to route information between channels and across depth.
+
+Design-ladder role (see METHODOLOGY.md §1.1, §5.4):
+    mHC is **Rung 3** of the design ladder, but sits *orthogonally* to the
+    other history-aggregation rungs (RR / VEGA / AttnRes).  Where the
+    other three rungs ask "how do we let a layer reach back into the
+    history of previous hidden states?", mHC asks "how do we let a single
+    sublayer mix across ``m`` parallel residual channels?".  The two
+    ideas are composable in principle but kept separate in this project
+    so each can be evaluated in isolation.  In the benchmark suite, mHC
+    is the **recently-published reference baseline** — included as the
+    "what does the latest concurrent work propose?" comparison point,
+    with the mHC-Lite (m=2) variant chosen to keep parameter overhead
+    negligible (O(m²·d) per sublayer, i.e. 4d for m=2).
+
+Init contract (verified by
+tests/test_mhc_integration.py::test_decoder_main_channel_matches_standard_at_init):
+    mHC has the **strictest zero-start** of any mechanism in the ladder.
+    At init, W_pre = I and W_post = I except for the main-channel row
+    (which is ``1, 0, 0, ..., 0``), so the main channel obeys
+    ``H_l[0] = h_{l-1} + y_l`` *bit-for-bit* — an exact standard Pre-LN
+    residual.  The other ``m - 1`` channels are pure carry-over
+    (``H_l[k] = H_{l-1}[k]``).  Off-diagonal entries of W_pre and W_post
+    are the only learnable parameters; they start at zero and grow during
+    training to route information between channels.
 """
 
 from __future__ import annotations

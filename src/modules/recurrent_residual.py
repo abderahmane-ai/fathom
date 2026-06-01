@@ -5,6 +5,29 @@ that flows across all layers.  The cell weights are shared (weight-tied) across 
 layer to keep weight parameter overhead at O(d) regardless of depth, while
 per-sublayer depth biases scale as O(L * d).
 
+Design-ladder role (see METHODOLOGY.md §1.1, §3.4):
+    RR is **Rung 1** of the design ladder — the rank-1 recurrent rung.  It
+    is the simplest cell in the ladder that can in principle learn to
+    summarize depth history: a single linear memory ``m`` updated by a gated
+    linear recurrence, with **no QKV projection** and therefore no
+    attention-style inductive bias.  It is cheaper than VEGA (state size 2d
+    vs. n_heads · r_head) and more interpretable (a single memory vector
+    you can read directly), at the cost of expressivity.  In the benchmark
+    suite, RR is the **first-order baseline** against which VEGA's
+    linear-attention retrieval is measured — the question "is QKV
+    conditioning worth the extra state?" is one of the design choices
+    this project is designed to answer.
+
+Init contract (verified by tests/test_design_ladder.py::test_rr_zero_start_at_init):
+    At init, memory_gain = 0 and read_gate bias = -3 (read_gate ≈ 0.047) so
+    the read term read_gate * memory_read is zero; damp_gate bias = +3
+    (damp_gate ≈ 0.953) so h_new ≈ 0.953 · h_prev + y.  The memory is
+    actively *written* (update_gate ≈ 0.119 is not closed) but the read-out
+    is gated off, so the cell has no net effect on the hidden state at
+    step 0.  This is the same *soft* zero-start as VEGA — strictly not
+    equal to the standard residual, but close enough that the first
+    few hundred training steps are stable.
+
 Math (per sublayer):
     y_norm = RMSNorm(y)
     read_gate  = σ(read_proj(y_norm)  + depth_read_bias[pos])

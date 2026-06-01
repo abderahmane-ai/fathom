@@ -15,6 +15,23 @@ Math (BlockAttnRes):
     output  = einsum("nbs, nbsd -> bsd", weights, values)
 
 At init pseudo_query=0 → uniform weights → output equals the mean of all inputs.
+
+Design-ladder role (see METHODOLOGY.md §1.1):
+    This module is **Rung 4** of the project's design ladder — the upper bound
+    on the "history aggregation" axis.  Rung 1 (RR) and Rung 2 (VEGA) are
+    progressively cheaper approximations of exactly the operation this module
+    performs: a content-conditioned retrieval over the history of depth states.
+    The empirical question this project is designed to answer is how much of
+    AttnRes's quality is recoverable at O(L) cost, and the block / full
+    variants here are the reference points against which the cheaper
+    alternatives are measured.
+
+Init contract (verified by tests/test_design_ladder.py::test_attnres_uniform_mean_at_init):
+    pseudo_query = 0 → uniform softmax → h_mid = mean([*blocks, partial]).
+    For the first layer (blocks = [embedding], partial = embedding) this is
+    well-defined; for deeper layers it converges to a uniform mean of the
+    history.  This is the *weakest* zero-start of the alternatives — the
+    cell's read-out is fully active at step 0, just with content-blind weights.
 """
 
 from __future__ import annotations
