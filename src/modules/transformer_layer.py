@@ -111,7 +111,20 @@ class TransformerLayer(nn.Module):
 
     # ── Standard / RR / VEGA forward ────────────────────────────────────────
 
-    def forward(
+    def forward(self, *args: Any, **kwargs: Any) -> Any:
+        """Unified forward pass routing to the correct mode-specific method."""
+        if self.residual_mode in {"standard", "recurrent_residual", "vega"}:
+            return self.forward_standard(*args, **kwargs)
+        elif self.residual_mode == "block_attnres":
+            return self.forward_attnres(*args, **kwargs)
+        elif self.residual_mode == "full_attnres":
+            return self.forward_full_attnres(*args, **kwargs)
+        elif self.residual_mode == "hyper_connection":
+            return self.forward_hyperconnection(*args, **kwargs)
+        else:
+            raise ValueError(f"Unknown residual_mode: '{self.residual_mode}'")
+
+    def forward_standard(
         self,
         x: torch.Tensor,
         layer_idx: int,
@@ -126,14 +139,7 @@ class TransformerLayer(nn.Module):
 
         Returns:
             ``(h_new, m_new)`` where m_new is None for standard mode.
-
-        Raises:
-            ValueError: If called in block_attnres or full_attnres mode.
         """
-        if self.residual_mode in {"block_attnres", "full_attnres"}:
-            raise ValueError(
-                f"Use forward_attnres / forward_full_attnres for mode '{self.residual_mode}'."
-            )
 
         # Attention sublayer
         x_norm = self.ln_1(x)

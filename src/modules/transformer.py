@@ -30,7 +30,7 @@ def _forward_attnres_layer(
     layer_idx: int,
 ) -> tuple[list[torch.Tensor], torch.Tensor]:
     """Checkpoint-friendly wrapper for one BlockAttnRes layer."""
-    return layer.forward_attnres(blocks, partial_block, layer_idx)
+    return layer(blocks, partial_block, layer_idx)
 
 
 class TransformerDecoder(nn.Module):
@@ -187,18 +187,18 @@ class TransformerDecoder(nn.Module):
                         use_reentrant=False,
                     )
                 else:
-                    blocks, partial_block = layer.forward_attnres(blocks, partial_block, idx)
+                    blocks, partial_block = layer(blocks, partial_block, idx)
             h = partial_block
 
         elif self.residual_mode == "full_attnres":
             history: list[torch.Tensor] = [h]
             for layer in self.layers:
-                history, h = layer.forward_full_attnres(history, h)
+                history, h = layer(history, h)
 
         elif self.residual_mode == "hyper_connection":
             H = h.unsqueeze(-2).expand(-1, -1, self.hc_channels, -1).contiguous()
             for idx, layer in enumerate(self.layers):
-                H = layer.forward_hyperconnection(H, idx)
+                H = layer(H, idx)
             h = H.select(dim=-2, index=0)
 
         else:  # standard
