@@ -177,6 +177,117 @@ def write_status(
     tmp.replace(path)
 
 
+def run_metadata_path(
+    benchmark_name: str,
+    residual_mode: str,
+    run_id: str = "default",
+) -> Path:
+    """Return the run-metadata JSON path for a run.
+
+    Args:
+        benchmark_name: Benchmark folder name.
+        residual_mode: Residual mode under evaluation.
+        run_id: Stable run identifier.
+
+    Returns:
+        Path to ``run.json`` (full run metadata, written once at start).
+    """
+    return run_dir(benchmark_name, residual_mode, run_id) / "run.json"
+
+
+def write_run_metadata(
+    benchmark_name: str,
+    residual_mode: str,
+    run_id: str = "default",
+    metadata: dict[str, Any] | None = None,
+    **fields: Any,
+) -> None:
+    """Write (or merge into) the run-metadata JSON file.
+
+    The file is ``run.json`` at the top level of the run directory.  It is
+    written once at run start with the full metadata dict, but subsequent
+    calls (e.g. on completion) can merge ``ended_at`` and other fields.
+
+    Args:
+        benchmark_name: Benchmark folder name.
+        residual_mode: Residual mode under evaluation.
+        run_id: Stable run identifier.
+        metadata: Full metadata dict from
+            ``benchmarks.common.run_metadata.capture_run_metadata``.
+        **fields: Additional JSON-serializable fields to merge.
+    """
+    path = run_metadata_path(benchmark_name, residual_mode, run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload: dict[str, Any] = {}
+    if path.exists():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            log.warning("Resetting corrupt run-metadata file at %s", path)
+
+    if metadata is not None:
+        payload.update(metadata)
+    payload.setdefault("benchmark_name", benchmark_name)
+    payload.setdefault("residual_mode", residual_mode)
+    payload.setdefault("run_id", run_id)
+    payload["updated_at"] = _utc_now()
+    payload.update(fields)
+
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str), encoding="utf-8")
+    tmp.replace(path)
+
+
+def find_all_runs(benchmark_name: str, root: Path | str | None = None) -> list[dict[str, Any]]:
+    """Find all run records under a benchmark directory.
+
+    Walks ``<root>/<benchmark_name>/<residual_mode>/<run_id>/status.json``
+    (or ``<root>/<residual_mode>/<run_id>/status.json`` when ``root`` already
+    points at the benchmark directory).  Returns one dict per file, with the
+    parsed JSON content augmented by ``_path`` (the status.json path) and
+    ``_run_dir`` (the run directory).
+
+    Args:
+        benchmark_name: Name of the benchmark (used as a filter when root
+            points above the benchmark dir).
+        root: Search root; defaults to ``artifact_root()``.
+
+    Returns:
+        List of run records, each with status.json content + ``_path`` and ``_run_dir``.
+    """
+    base = Path(root) if root is not None else benchmark_dir(benchmark_name)
+    if not base.is_dir():
+        return []
+    runs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    # Try 3-component pattern first: <root>/<benchmark>/<mode>/<run_id>/status.json
+    for status_file in sorted(base.glob(f"{benchmark_name}/*/*/status.json")):
+        if str(status_file) in seen:
+            continue
+        try:
+            payload = json.loads(status_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        payload["_path"] = str(status_file)
+        payload["_run_dir"] = str(status_file.parent)
+        runs.append(payload)
+        seen.add(str(status_file))
+    # Fallback 2-component pattern: <root>/<mode>/<run_id>/status.json (caller passed benchmark dir)
+    for status_file in sorted(base.glob("*/*/status.json")):
+        if str(status_file) in seen:
+            continue
+        try:
+            payload = json.loads(status_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        payload["_path"] = str(status_file)
+        payload["_run_dir"] = str(status_file.parent)
+        runs.append(payload)
+        seen.add(str(status_file))
+    return runs
+
+
 def find_resume_checkpoint(
     benchmark_name: str,
     residual_mode: str,
