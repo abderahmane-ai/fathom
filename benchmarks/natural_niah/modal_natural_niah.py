@@ -12,7 +12,12 @@ from pathlib import Path
 import modal
 import torch
 
-from benchmarks.common.artifacts import repo_root
+from benchmarks.common.artifacts import (
+    repo_root,
+    run_dir,
+    write_run_metadata,
+    write_status,
+)
 from benchmarks.common.configs import config_for_mode, load_benchmark_config
 from benchmarks.common.modal_utils import (
     ARTIFACT_MOUNT,
@@ -20,6 +25,12 @@ from benchmarks.common.modal_utils import (
     VOLUME_NAME,
     modal_ignore_patterns,
     write_spawn_manifest,
+)
+from benchmarks.common.run_metadata import (
+    WallClock,
+    capture_run_metadata,
+    log_run_banner,
+    log_run_finish,
 )
 
 BENCHMARK_NAME = "natural_niah"
@@ -97,73 +108,130 @@ def generate(model: torch.nn.Module, input_ids: torch.Tensor, max_new_tokens: in
 
 
 def _run_niah_eval(mode: str, lm_run_id: str, compile: bool = False) -> None:
+    import traceback
+
     _prepare_remote()
-    from transformers import AutoTokenizer
-
-    from src.modules.transformer import TransformerDecoder
-
-    ckpt_dir = Path(ARTIFACT_MOUNT) / "lm_quality" / mode / lm_run_id / "checkpoints"
-    checkpoints = glob.glob(str(ckpt_dir / "*.ckpt"))
-
-    if not checkpoints:
-        log.warning(f"No checkpoints found for {mode} at {ckpt_dir}. Skipping NIAH eval.")
-        return
-
-    checkpoint_path = checkpoints[0]  # Just take the first/last available
-    log.info(f"Loading checkpoint {checkpoint_path} for {mode}")
-
-    # Load configuration
     cfg = config_for_mode(load_benchmark_config(BENCHMARK_NAME), mode)
-    tokenizer = AutoTokenizer.from_pretrained(cfg.data.tokenizer_name, use_fast=True)
+    metadata = capture_run_metadata(
+        benchmark_name=BENCHMARK_NAME,
+        run_id=lm_run_id,
+        residual_mode=mode,
+        config=cfg,
+        extra={"compile": compile, "lm_run_id": lm_run_id},
+    )
+    write_run_metadata(BENCHMARK_NAME, mode, lm_run_id, metadata=metadata)
+    log_run_banner(log, metadata)
+    write_status(BENCHMARK_NAME, mode, lm_run_id, status="starting")
 
-    # Load model
-    model = TransformerDecoder(cfg.model)
-    # Lightning checkpoints wrap the model state_dict in `state_dict`, often prefixed with `model.`
-    state_dict = torch.load(checkpoint_path, map_location="cpu")["state_dict"]
-    # Remove 'model.' prefix if present from Lightning wrapper
-    state_dict = {
-        k.replace("model.", ""): v for k, v in state_dict.items() if k.startswith("model.")
-    }
-    model.load_state_dict(state_dict, strict=False)
-    model = model.cuda().eval()
-    if compile:
-        model = torch.compile(model)
+    clock = WallClock()
+    try:
+        from transformers import AutoTokenizer
 
-    # Prepare Context
-    # Inject passkey at 20% mark
-    words = HAYSTACK_TEXT.split()
-    inject_idx = len(words) // 5
-    words.insert(inject_idx, "The secret passkey to the vault is 84729.")
+        from src.modules.transformer import TransformerDecoder
 
-    context_text = " ".join(words)
-    prompt_text = context_text + " The secret passkey to the vault is"
+        ckpt_dir = Path(ARTIFACT_MOUNT) / "lm_quality" / mode / lm_run_id / "checkpoints"
+        checkpoints = glob.glob(str(ckpt_dir / "*.ckpt"))
 
-    input_ids = tokenizer(prompt_text, return_tensors="pt").input_ids.cuda()
+        if not checkpoints:
+            log.warning("No checkpoints found for %s at %s. Skipping NIAH eval.", mode, ckpt_dir)
+            write_status(
+                BENCHMARK_NAME,
+                mode,
+                lm_run_id,
+                status="skipped",
+                reason="no checkpoints",
+                elapsed_seconds=clock.elapsed(),
+            )
+            artifact_volume.commit()
+            return
 
-    log.info(f"Running generation for {mode} (input length: {input_ids.shape[1]})...")
-    # Generate exactly enough tokens for " 84729" (usually ~2-3 tokens depending on tokenizer)
-    output_ids = generate(model, input_ids, max_new_tokens=5)
+        checkpoint_path = checkpoints[0]  # Just take the first/last available
+        log.info("Loading checkpoint %s for %s", checkpoint_path, mode)
 
-    generated_text = tokenizer.decode(output_ids[0][input_ids.shape[1] :])
-    success = "84729" in generated_text
+        tokenizer = AutoTokenizer.from_pretrained(cfg.data.tokenizer_name, use_fast=True)
 
-    log.info(f"[{mode}] Generated completion: {generated_text}")
-    log.info(f"[{mode}] Passkey retrieved: {success}")
+        model = TransformerDecoder(cfg.model)
+        # Lightning checkpoints wrap the model state_dict in `state_dict`, often prefixed with `model.`
+        state_dict = torch.load(checkpoint_path, map_location="cpu")["state_dict"]
+        state_dict = {
+            k.replace("model.", ""): v for k, v in state_dict.items() if k.startswith("model.")
+        }
+        model.load_state_dict(state_dict, strict=False)
+        model = model.cuda().eval()
+        if compile:
+            model = torch.compile(model)
 
-    # Save artifacts
-    results = {
-        "mode": mode,
-        "success": success,
-        "generated_text": generated_text,
-        "input_length": input_ids.shape[1],
-    }
+        # Prepare Context: inject passkey at 20% mark
+        words = HAYSTACK_TEXT.split()
+        inject_idx = len(words) // 5
+        words.insert(inject_idx, "The secret passkey to the vault is 84729.")
 
-    out_dir = Path(ARTIFACT_MOUNT) / "natural_niah" / mode / lm_run_id
-    out_dir.mkdir(parents=True, exist_ok=True)
-    with open(out_dir / "niah_result.json", "w") as f:
-        json.dump(results, f, indent=2)
+        context_text = " ".join(words)
+        prompt_text = context_text + " The secret passkey to the vault is"
 
-    artifact_volume.commit()
+        input_ids = tokenizer(prompt_text, return_tensors="pt").input_ids.cuda()
+
+        log.info("Running generation for %s (input length: %d)...", mode, input_ids.shape[1])
+        output_ids = generate(model, input_ids, max_new_tokens=5)
+
+        generated_text = tokenizer.decode(output_ids[0][input_ids.shape[1] :])
+        success = "84729" in generated_text
+
+        log.info("[%s] Generated completion: %s", mode, generated_text)
+        log.info("[%s] Passkey retrieved: %s", mode, success)
+
+        results = {
+            "mode": mode,
+            "success": success,
+            "generated_text": generated_text,
+            "input_length": input_ids.shape[1],
+        }
+
+        out_dir = Path(ARTIFACT_MOUNT) / "natural_niah" / mode / lm_run_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with open(out_dir / "niah_result.json", "w") as f:
+            json.dump(results, f, indent=2)
+
+        # Also write to canonical artifacts/ tree
+        canonical_dir = run_dir(BENCHMARK_NAME, mode, lm_run_id)
+        canonical_dir.mkdir(parents=True, exist_ok=True)
+        with open(canonical_dir / "niah_result.json", "w") as f:
+            json.dump(results, f, indent=2)
+
+        elapsed = clock.elapsed()
+        write_status(
+            BENCHMARK_NAME,
+            mode,
+            lm_run_id,
+            status="completed",
+            success=success,
+            input_length=int(input_ids.shape[1]),
+            elapsed_seconds=elapsed,
+        )
+        log_run_finish(
+            log,
+            status="completed",
+            elapsed_seconds=elapsed,
+            passkey_retrieved=success,
+            input_length=int(input_ids.shape[1]),
+        )
+        artifact_volume.commit()
+    except Exception as exc:
+        elapsed = clock.elapsed()
+        tb = traceback.format_exc()
+        write_status(
+            BENCHMARK_NAME,
+            mode,
+            lm_run_id,
+            status="failed",
+            error=str(exc),
+            error_type=type(exc).__name__,
+            traceback=tb,
+            elapsed_seconds=elapsed,
+        )
+        log_run_finish(log, status="failed", elapsed_seconds=elapsed, error=str(exc))
+        artifact_volume.commit()
+        raise
 
 
 @app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume})

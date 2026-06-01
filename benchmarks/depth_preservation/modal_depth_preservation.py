@@ -12,7 +12,13 @@ import modal
 import torch
 from omegaconf import DictConfig
 
-from benchmarks.common.artifacts import repo_root
+from benchmarks.common.artifacts import (
+    benchmark_dir,
+    repo_root,
+    run_dir,
+    write_run_metadata,
+    write_status,
+)
 from benchmarks.common.configs import config_for_mode, load_benchmark_config, make_run_id
 from benchmarks.common.modal_utils import (
     ARTIFACT_MOUNT,
@@ -20,6 +26,12 @@ from benchmarks.common.modal_utils import (
     VOLUME_NAME,
     modal_ignore_patterns,
     write_spawn_manifest,
+)
+from benchmarks.common.run_metadata import (
+    WallClock,
+    capture_run_metadata,
+    log_run_banner,
+    log_run_finish,
 )
 
 BENCHMARK_NAME = "depth_preservation"
@@ -60,15 +72,19 @@ def _prepare_remote() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 
-def _run_dps_evaluation(cfg: DictConfig, residual_mode: str, run_id: str) -> None:
-    """Run the DPS evaluation logic."""
+def _run_dps_evaluation(cfg: DictConfig, residual_mode: str, run_id: str) -> dict:
+    """Run the DPS evaluation logic.
+
+    Returns:
+        A dict of final results (dri, gpi, n_tokens, dps_scores, gps_scores).
+    """
     from benchmarks.common.dps_extractor import DPSEvaluator
     from benchmarks.common.metrics import calculate_dri, calculate_gpi, compute_dps_closed_form
     from src.data import LanguageModelDataModule
     from src.modules import TransformerDecoder
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    log.info(f"Initializing {residual_mode} model for DPS probing on {device}")
+    log.info("Initializing %s model for DPS probing on %s", residual_mode, device)
 
     # Initialize Model (Untrained baseline probing)
     model = TransformerDecoder(cfg.model).to(device)
@@ -90,7 +106,7 @@ def _run_dps_evaluation(cfg: DictConfig, residual_mode: str, run_id: str) -> Non
 
     with torch.no_grad():
         for k in target_layers:
-            log.info(f"Evaluating DPS/GPS for layer {k} / {L - 1}")
+            log.info("Evaluating DPS/GPS for layer %d / %d", k, L - 1)
             evaluator = DPSEvaluator(model, layer_idx=k, final_norm_name=final_norm_name)
 
             tokens_processed = 0
@@ -136,18 +152,15 @@ def _run_dps_evaluation(cfg: DictConfig, residual_mode: str, run_id: str) -> Non
             gps_scores.append(gps)
 
             log.info(
-                f"Layer {k} DPS: {dps:.4f} | GPS: {gps:.4f} (Dissim: {res['mean_dissim']:.4f})"
+                "Layer %d DPS: %.4f | GPS: %.4f (Dissim: %.4f)",
+                k, dps, gps, res["mean_dissim"],
             )
 
     dri = calculate_dri(dps_scores)
     gpi = calculate_gpi(gps_scores)
-    log.info(f"Final DRI for {residual_mode}: {dri:.4f} | GPI: {gpi:.4f}")
+    log.info("Final DRI for %s: %.4f | GPI: %.4f", residual_mode, dri, gpi)
 
-    # Save results to artifact volume
-    output_dir = Path(ARTIFACT_MOUNT) / "results" / BENCHMARK_NAME / run_id
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    results = {
+    return {
         "residual_mode": residual_mode,
         "run_id": run_id,
         "dps_scores": dps_scores,
@@ -156,9 +169,6 @@ def _run_dps_evaluation(cfg: DictConfig, residual_mode: str, run_id: str) -> Non
         "gpi": gpi,
         "n_tokens": n_target_tokens,
     }
-
-    with open(output_dir / f"{residual_mode}_dps.json", "w") as f:
-        json.dump(results, f, indent=2)
 
 
 def _run_mode(residual_mode: str, run_id: str, compile: bool = False) -> None:
@@ -169,11 +179,77 @@ def _run_mode(residual_mode: str, run_id: str, compile: bool = False) -> None:
         run_id: Shared run id.
         compile: Whether to compile the model.
     """
+    import traceback
+
+    from benchmarks.common.param_count import count_parameters
+
     _prepare_remote()
     cfg = config_for_mode(load_benchmark_config(BENCHMARK_NAME), residual_mode)
     cfg.compile = compile
-    _run_dps_evaluation(cfg, residual_mode, run_id)
-    artifact_volume.commit()
+
+    metadata = capture_run_metadata(
+        benchmark_name=BENCHMARK_NAME,
+        run_id=run_id,
+        residual_mode=residual_mode,
+        config=cfg,
+    )
+    write_run_metadata(BENCHMARK_NAME, residual_mode, run_id, metadata=metadata)
+    log_run_banner(log, metadata)
+    write_status(BENCHMARK_NAME, residual_mode, run_id, status="starting")
+
+    clock = WallClock()
+    try:
+        results = _run_dps_evaluation(cfg, residual_mode, run_id)
+        elapsed = clock.elapsed()
+
+        # Save results to artifact volume (legacy path retained for backward compat)
+        output_dir = Path(ARTIFACT_MOUNT) / "results" / BENCHMARK_NAME / run_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        with open(output_dir / f"{residual_mode}_dps.json", "w") as f:
+            json.dump(results, f, indent=2)
+
+        # Also write to canonical artifacts/ tree so status + find_all_runs can find it
+        canonical_dir = run_dir(BENCHMARK_NAME, residual_mode, run_id)
+        canonical_dir.mkdir(parents=True, exist_ok=True)
+        with open(canonical_dir / "dps.json", "w") as f:
+            json.dump(results, f, indent=2)
+
+        write_status(
+            BENCHMARK_NAME,
+            residual_mode,
+            run_id,
+            status="completed",
+            dri=results["dri"],
+            gpi=results["gpi"],
+            n_tokens=results["n_tokens"],
+            n_layers=len(results["dps_scores"]),
+            elapsed_seconds=elapsed,
+        )
+        log_run_finish(
+            log,
+            status="completed",
+            elapsed_seconds=elapsed,
+            dri=f"{results['dri']:.4f}",
+            gpi=f"{results['gpi']:.4f}",
+            n_tokens=results["n_tokens"],
+        )
+        artifact_volume.commit()
+    except Exception as exc:
+        elapsed = clock.elapsed()
+        tb = traceback.format_exc()
+        write_status(
+            BENCHMARK_NAME,
+            residual_mode,
+            run_id,
+            status="failed",
+            error=str(exc),
+            error_type=type(exc).__name__,
+            traceback=tb,
+            elapsed_seconds=elapsed,
+        )
+        log_run_finish(log, status="failed", elapsed_seconds=elapsed, error=str(exc))
+        artifact_volume.commit()
+        raise
 
 
 @app.function(

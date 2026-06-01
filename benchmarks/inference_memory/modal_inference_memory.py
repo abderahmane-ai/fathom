@@ -12,7 +12,12 @@ from pathlib import Path
 import modal
 import torch
 
-from benchmarks.common.artifacts import repo_root
+from benchmarks.common.artifacts import (
+    repo_root,
+    run_dir,
+    write_run_metadata,
+    write_status,
+)
 from benchmarks.common.configs import config_for_mode, load_benchmark_config, make_run_id
 from benchmarks.common.inference_latency import profile_forward
 from benchmarks.common.modal_utils import (
@@ -21,6 +26,12 @@ from benchmarks.common.modal_utils import (
     VOLUME_NAME,
     modal_ignore_patterns,
     write_spawn_manifest,
+)
+from benchmarks.common.run_metadata import (
+    WallClock,
+    capture_run_metadata,
+    log_run_banner,
+    log_run_finish,
 )
 
 BENCHMARK_NAME = "inference_memory"
@@ -64,65 +75,132 @@ def _prepare_remote() -> None:
 )
 def run_memory_profile(run_id: str, compile: bool = False) -> None:
     """Profile peak activation memory and forward-pass latency across modes and depths."""
+    import traceback
+
     _prepare_remote()
     from src.modules.transformer import TransformerDecoder
 
-    if not torch.cuda.is_available():
-        log.warning("CUDA is not available. Script will output zeros.")
-        return
+    cfg = load_benchmark_config(BENCHMARK_NAME)
+    metadata = capture_run_metadata(
+        benchmark_name=BENCHMARK_NAME,
+        run_id=run_id,
+        residual_mode="all_modes",
+        config=cfg,
+        extra={"compile": compile, "depths": [12, 24, 48, 96]},
+    )
+    write_run_metadata(BENCHMARK_NAME, "all_modes", run_id, metadata=metadata)
+    log_run_banner(log, metadata)
+    write_status(BENCHMARK_NAME, "all_modes", run_id, status="starting")
 
-    modes = ["standard", "recurrent_residual", "vega", "block_attnres", "hyper_connection"]
-    depths = [12, 24, 48, 96]
-    seq_len = 100
-    vocab_size = 1024
+    clock = WallClock()
+    try:
+        if not torch.cuda.is_available():
+            log.warning("CUDA is not available. Script will output zeros.")
+            results: dict[str, list[dict[str, float]]] = {
+                mode: [
+                    {
+                        "layers": L,
+                        "peak_vram_mb": 0.0,
+                        "mean_latency_ms": 0.0,
+                        "p50_latency_ms": 0.0,
+                        "p99_latency_ms": 0.0,
+                        "tokens_per_second": 0.0,
+                    }
+                    for L in [12, 24, 48, 96]
+                ]
+                for mode in ["standard", "recurrent_residual", "vega", "block_attnres", "hyper_connection"]
+            }
+        else:
+            modes = ["standard", "recurrent_residual", "vega", "block_attnres", "hyper_connection"]
+            depths = [12, 24, 48, 96]
+            seq_len = 100
+            vocab_size = 1024
+            results = {mode: [] for mode in modes}
+            base_cfg = load_benchmark_config(BENCHMARK_NAME)
 
-    results: dict[str, list[dict[str, float]]] = {mode: [] for mode in modes}
-    base_cfg = load_benchmark_config(BENCHMARK_NAME)
+            for mode in modes:
+                for L in depths:
+                    log.info("Profiling %s at %d layers...", mode, L)
+                    cfg_m = config_for_mode(base_cfg, mode)
+                    cfg_m.model.num_layers = L
 
-    for mode in modes:
-        for L in depths:
-            log.info(f"Profiling {mode} at {L} layers...")
-            cfg = config_for_mode(base_cfg, mode)
-            cfg.model.num_layers = L
+                    model = TransformerDecoder(cfg_m.model)
+                    if compile:
+                        model = torch.compile(model)
+                    torch.cuda.empty_cache()
+                    torch.cuda.reset_peak_memory_stats()
 
-            model = TransformerDecoder(cfg.model)
-            if compile:
-                model = torch.compile(model)
-            torch.cuda.empty_cache()
-            torch.cuda.reset_peak_memory_stats()
+                    latency = profile_forward(
+                        model,
+                        batch_size=1,
+                        seq_len=seq_len,
+                        vocab_size=vocab_size,
+                        n_warmup=2,
+                        n_runs=5,
+                        device="cuda",
+                    )
+                    results[mode].append(
+                        {
+                            "layers": L,
+                            "peak_vram_mb": latency.peak_vram_mb,
+                            "mean_latency_ms": latency.mean_ms,
+                            "p50_latency_ms": latency.p50_ms,
+                            "p99_latency_ms": latency.p99_ms,
+                            "tokens_per_second": latency.tokens_per_second,
+                        }
+                    )
+                    del model
+                    torch.cuda.empty_cache()
+                    gc.collect()
 
-            latency = profile_forward(
-                model,
-                batch_size=1,
-                seq_len=seq_len,
-                vocab_size=vocab_size,
-                n_warmup=2,
-                n_runs=5,
-                device="cuda",
-            )
-            results[mode].append(
-                {
-                    "layers": L,
-                    "peak_vram_mb": latency.peak_vram_mb,
-                    "mean_latency_ms": latency.mean_ms,
-                    "p50_latency_ms": latency.p50_ms,
-                    "p99_latency_ms": latency.p99_ms,
-                    "tokens_per_second": latency.tokens_per_second,
-                }
-            )
-            del model
-            torch.cuda.empty_cache()
-            gc.collect()
+        elapsed = clock.elapsed()
+        out_dir = Path(ARTIFACT_MOUNT) / "inference_memory" / run_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_file = out_dir / "profile_results.json"
+        with open(out_file, "w") as f:
+            json.dump(results, f, indent=2)
 
-    out_dir = Path(ARTIFACT_MOUNT) / "inference_memory" / run_id
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / "profile_results.json"
+        # Also write to canonical artifacts/ tree
+        canonical_dir = run_dir(BENCHMARK_NAME, "all_modes", run_id)
+        canonical_dir.mkdir(parents=True, exist_ok=True)
+        with open(canonical_dir / "profile_results.json", "w") as f:
+            json.dump(results, f, indent=2)
 
-    with open(out_file, "w") as f:
-        json.dump(results, f, indent=2)
-
-    log.info(f"Profiling complete. Results saved to {out_file}")
-    artifact_volume.commit()
+        n_combinations = sum(len(v) for v in results.values())
+        log.info("Profiling complete. Results saved to %s", out_file)
+        write_status(
+            BENCHMARK_NAME,
+            "all_modes",
+            run_id,
+            status="completed",
+            n_modes=len(results),
+            n_combinations=n_combinations,
+            elapsed_seconds=elapsed,
+        )
+        log_run_finish(
+            log,
+            status="completed",
+            elapsed_seconds=elapsed,
+            n_combinations=n_combinations,
+            n_modes=len(results),
+        )
+        artifact_volume.commit()
+    except Exception as exc:
+        elapsed = clock.elapsed()
+        tb = traceback.format_exc()
+        write_status(
+            BENCHMARK_NAME,
+            "all_modes",
+            run_id,
+            status="failed",
+            error=str(exc),
+            error_type=type(exc).__name__,
+            traceback=tb,
+            elapsed_seconds=elapsed,
+        )
+        log_run_finish(log, status="failed", elapsed_seconds=elapsed, error=str(exc))
+        artifact_volume.commit()
+        raise
 
 
 @app.local_entrypoint()
