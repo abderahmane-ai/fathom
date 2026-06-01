@@ -1,0 +1,44 @@
+seed: 42
+modes:
+  - standard
+  - recurrent_residual
+  - vega
+  - block_attnres
+
+model:
+  residual_mode: standard
+  d_model: 192
+  n_heads: 6
+  ff_dim: 768
+  num_layers: 24
+  max_seq_len: 128
+  vocab_size: 50257
+  dropout: 0.1
+  recurrent_residual:
+    read_gate_bias: -3.0
+    forget_gate_bias: 3.0
+    update_gate_bias: -2.0
+    damp_gate_bias: 3.0
+    gate_init_std: 0.01
+    memory_gain_init: 0.0
+    eps: 1.0e-5
+  vega:
+    rank: 16
+    n_heads: 4
+    n_fast_heads: 2
+    read_gate_bias: -3.0
+    write_gate_bias: -2.0
+    damp_gate_bias: 3.0
+    gate_init_std: 0.01
+    eps: 1.0e-5
+  attnres_block:
+    block_size: 2
+
+data:
+  dataset_name: roneneldan/TinyStories
+  dataset_config: default
+  tokenizer_name: gpt2
+  max_seq_len: 128
+
+benchmark:
+  task: natural_niah
