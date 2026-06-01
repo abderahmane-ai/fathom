@@ -264,21 +264,25 @@ Per layer, the added parameters are:
 - $W_\text{pre}, W_\text{post} \in \mathbb{R}^{n \cdot d \times n}$: $2 n^2 d$ parameters (for $n=2$: $8d$).
 - $W_\text{res}$: $n \cdot d \cdot n^2$ (SK) or $n \cdot d \cdot n!$ (mHC-Lite) parameters. For $n=2$: $4d$ (mHC-Lite) or $8d$ (SK).
 - Three learnable $\alpha_\star$ scalars: 3 parameters.
-- Three bias vectors: $3n$ (for $n=2$: 6) plus $n^2$ or $n!$ for $b_\text{res}$ (4 or 2 for $n=2$).
+- Three bias vectors: $2n$ (b_pre + b_post) plus $n^2$ or $n!$ for $b_\text{res}$ (4 or 2 for $n=2$).
+- RMSNorm learnable scale: $n \cdot d$ parameters (the mHC paper absorbs this into its fused $\varphi_l$ kernel; we expose it as a separate `RMSNorm(in_dim).scale` parameter, which is mathematically equivalent).
 
 Total per layer (for $n=2$):
-- SK: $8d + 8d + 9 = 16d + 9$ → $\sim 0.16\%$ of a 1024-dim model.
-- mHC-Lite: $8d + 4d + 9 = 12d + 9$ → $\sim 0.1\%$ of a 1024-dim model.
+- SK: $8d + 8d + 2d + 3 + 4 + 4 = 18d + 11$ → $\sim 0.18\%$ of a 1024-dim model.
+- mHC-Lite: $8d + 4d + 2d + 3 + 4 + 2 = 14d + 9$ → $\sim 0.14\%$ of a 1024-dim model.
 
 For $n=4$:
 - **SK is supported** (this is the paper's production choice for 3B/9B/27B models).
   - W_pre, W_post: $2 n^2 d = 32d$
   - W_res: $n \cdot d \cdot n^2 = 64d$
-  - Biases + αs: $3n + n^2 + 3 = 31$
-  - **Total per layer: $96d + 31$** → $\sim 0.1\%$ of a 1024-dim model.  At d=4096 (paper's 27B): $\sim 393K$ extra params/layer, 0.024% of the $\sim 1.6B$ transformer params.
+  - RMSNorm scale: $n \cdot d = 4d$
+  - Biases + αs: $2n + n^2 + 3 = 27$
+  - **Total per layer: $100d + 27$** → $\sim 0.1\%$ of a 1024-dim model.  At d=4096 (paper's 27B): $\sim 410K$ extra params/layer, 0.025% of the $\sim 1.6B$ transformer params.
 - **mHC-Lite is not supported** because $n! = 24$ makes the W_res projection intractable ($4d \cdot 24 = 96d$ just for the res-mix, same scale as SK, but with 24 permutation matrices stored).  The constructor raises `NotImplementedError` for `algorithm="permutation_convex", num_channels>=3`.  The sHC paper (arXiv:2603.20896) is the polynomial-scaling alternative for larger $n$.
 
 The codebase supports both `num_channels=2` and `num_channels=4` for SK (the default in `conf/model/mhc.yaml` is `num_channels=2` for backward compatibility; set to 4 to match the paper's production choice).
+
+The formulas above are exercised by `tests/test_hyper_connection.py::TestHyperConnectionN4` (shape tests) and a one-shot print of `hc.parameters()` for any `(n, d)` pair — verified at `(n=2, d=256, 768, 4096)` and `(n=4, d=256, 768, 4096)`.
 
 ### 5.4 Relation to the Design Ladder
 

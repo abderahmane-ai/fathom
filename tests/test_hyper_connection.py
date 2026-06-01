@@ -674,3 +674,32 @@ class TestHyperConnectionN4:
         assert torch.isfinite(hc.alpha_pre.grad).all()
         assert torch.isfinite(hc.alpha_post.grad).all()
         assert torch.isfinite(hc.alpha_res.grad).all()
+
+    @pytest.mark.parametrize(
+        ("n", "d", "expected"),
+        [
+            # Formula (SK): total = d*n*(n+1)^2 + (n^2 + 2n + 3)
+            # Verified against actual sum(p.numel() for p in hc.parameters()).
+            (2, 256, 4619),
+            (2, 768, 13835),
+            (2, 1024, 18443),
+            (2, 4096, 73739),
+            (4, 256, 25627),
+            (4, 768, 76827),
+            (4, 1024, 102427),
+            (4, 4096, 409627),
+        ],
+    )
+    def test_parameter_count_matches_formula(self, n: int, d: int, expected: int) -> None:
+        """Pin the parameter count to a known value so silent shape/bias changes
+        get caught.  Formula: total = d*n*(n+1)^2 + (n^2 + 2n + 3).
+
+        Breakdown: W_pre (n^2 d) + W_post (n^2 d) + W_res (n^3 d) + 3 alpha
+        + 2n (b_pre + b_post) + n^2 (b_res, SK) + n*d (RMSNorm scale).
+        """
+        hc = HyperConnection(d_model=d, num_channels=n, algorithm="sinkhorn_knopp")
+        actual = sum(p.numel() for p in hc.parameters())
+        assert actual == expected, (
+            f"n={n}, d={d}: actual={actual}, expected={expected}. "
+            f"Check the per-layer parameter breakdown in METHODOLOGY.md §5.3."
+        )

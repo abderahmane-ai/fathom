@@ -186,12 +186,11 @@ class HyperConnection(nn.Module):
             b_res[0, 0] = 0.0  # identity-permutation entry (the 0th of n! permutations)
         self.b_res = nn.Parameter(b_res)
 
-        # RMSNorm for the input (parameter-free, matching the mHC paper).
-        # We reuse the existing RMSNorm module with its learnable scale zeroed
-        # out at init, which is mathematically equivalent to a parameter-free
-        # RMSNorm and keeps the codebase consistent.  The scale is a regular
-        # learnable parameter that starts at 1 (the default for RMSNorm), so
-        # the parameter-free behavior is the init point.
+        # RMSNorm for the input.  The mHC paper "absorbs the RMSNorm weight
+        # into φ_l" as a kernel-fusion optimization; we use a separate
+        # RMSNorm with its default learnable scale (initialized to ones).
+        # Mathematically equivalent to the paper's treatment; the learnable
+        # scale adds n·d parameters that the paper's fused kernel hides.
         self.norm = RMSNorm(in_dim, eps=1e-6)
 
         # Pre-compute the n! permutation matrices of n×n (used by the
