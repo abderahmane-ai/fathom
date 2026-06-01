@@ -13,7 +13,7 @@ defined baseline.  This file codifies that contract rung by rung:
   |    0 | standard  | h_prev + (sublayer outputs)  | yes (trivial)       |
   |    1 | rr        | σ(+3)·h_prev + y ≈ 0.953·h + y | no (soft)          |
   |    2 | vega      | σ(+3)·h_prev + y ≈ 0.953·h + y | no (soft)          |
-  |    3 | mhc       | h_prev + y (channel 0)        | yes (bit-for-bit)  |
+  |    3 | mhc       | H_res·H + 2·σ(±1)·y ≈ H + 1.462·y[0]+0.538·y[1] | no (paper's approximate) |
   |    4 | attnres   | mean([*blocks, partial])      | n/a (uniform mean)  |
 
 The parametrised summary at the bottom is a **documentation test** — it
@@ -190,58 +190,64 @@ def test_vega_init_damp_bias_matches_documented_value() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Rung 3: mHC — strict zero-start on the main channel
+# Rung 3: mHC — paper-faithful (mHC-Lite, arXiv:2601.05732) approximate
+# zero-start
 # ─────────────────────────────────────────────────────────────────────────
 
 
-def test_mhc_strict_zero_start_at_init() -> None:
-    """mHC at init: channel 0 == h_prev + y *exactly* (bit-for-bit).
-
-    W_pre is identity on the m channels and W_post is identity on the m
-    pre-mixed channels with the y-row adding to channel 0.  This is the
-    **strictest** zero-start of any mechanism in the ladder.
+def test_mhc_approximate_zero_start_at_init() -> None:
+    """mHC at init: H_new = H_res · H + H_post · y, with the paper's init
+    protocol giving H_pre ≈ [0.731, 0.269], H_post ≈ [1.462, 0.538], and
+    H_res ≈ I_2.  This is **approximate** (not bit-for-bit) zero-start:
+    channel 0 still gets close to a standard residual, but with a y-gain
+    of 1.462 instead of 1.  See METHODOLOGY.md §5.2 for the rationale.
     """
     mhc = HyperConnection(d_model=64, num_channels=2)
     H = torch.randn(2, 4, 2, 64)
     y = torch.randn(2, 4, 64)
 
-    H_pre = mhc.pre_mix(H)
-    H_post = mhc.post_mix(H_pre, y)
+    # pre_mix / post_mix route through the dynamic init.
+    x = mhc.pre_mix(H)
+    H_new = mhc.post_mix(H, y)
 
-    # Main channel: H_pre[0] = H[0] (pre-mix is identity on the main channel).
-    assert_close(H_pre[..., 0, :], H[..., 0, :], atol=1e-6, rtol=1e-6)
-    # H_post[0] = H_pre[0] + y (post-mix adds y to the main channel only).
-    assert_close(H_post[..., 0, :], H_pre[..., 0, :] + y, atol=1e-6, rtol=1e-6)
-    # Combined: H_post[0] = H[0] + y — the exact standard residual.
-    assert_close(H_post[..., 0, :], H[..., 0, :] + y, atol=1e-6, rtol=1e-6)
-    # Shadow channel: H_post[1] = H_pre[1] = H[1] (pure carry-over at init).
-    assert_close(H_post[..., 1, :], H[..., 1, :], atol=1e-6, rtol=1e-6)
+    # pre_mix returns the mixed sublayer input, shape (B, S, d).
+    assert x.shape == (2, 4, 64)
+    # post_mix returns the new n-channel residual state, shape (B, S, n, d).
+    assert H_new.shape == (2, 4, 2, 64)
+
+    # 1) H_res ≈ I_2 → H_res · H ≈ H.
+    # 2) H_post ≈ [1.462, 0.538] → y_post[0] ≈ 1.462·y, y_post[1] ≈ 0.538·y.
+    # Tolerance ≈ 5e-3 absorbs the 4e-4 deviation of softmax([0, -8]) from I.
+    assert_close(H_new[..., 0, :], H[..., 0, :] + 1.4621 * y, atol=5e-3, rtol=5e-3)
+    assert_close(H_new[..., 1, :], H[..., 1, :] + 0.5379 * y, atol=5e-3, rtol=5e-3)
 
 
-def test_mhc_init_mix_matrices_have_expected_block_structure() -> None:
-    """At init: W_pre = I_m, W_post = [[I_m], [e_0]] where e_0 = (1, 0, ..., 0).
-
-    The off-diagonal entries of W_pre (routing from non-main channels into
-    the main sublayer input) and the non-main rows of W_post (routing y
-    into shadow channels) start at zero.  These are the only learnable
-    routing parameters; they grow during training.
+def test_mhc_init_contract_at_init() -> None:
+    """At init, the three dynamic mix matrices are fixed by the paper's
+    bias-only protocol (W=0, α=0.01).  This is what gives the
+    approximate zero-start in ``test_mhc_approximate_zero_start_at_init``.
     """
     mhc = HyperConnection(d_model=64, num_channels=2)
 
-    # W_pre (num_channels, num_channels) at init: identity.
-    assert_close(mhc.W_pre.detach(), torch.eye(2), atol=1e-6, rtol=1e-6)
+    # All projection weights start at zero.
+    assert torch.equal(mhc.W_pre.detach(), torch.zeros(128, 2))
+    assert torch.equal(mhc.W_post.detach(), torch.zeros(128, 2))
+    assert torch.equal(mhc.W_res.detach(), torch.zeros(128, 2))
 
-    # W_post (num_channels + 1, num_channels) at init:
-    #   top num_channels rows: identity (channels → channels)
-    #   bottom row: e_0 (y → main channel only)
-    expected_W_post = torch.tensor(
-        [
-            [1.0, 0.0],  # channel 0 → channel 0
-            [0.0, 1.0],  # channel 1 → channel 1
-            [1.0, 0.0],  # y → main channel (channel 0)
-        ]
-    )
-    assert_close(mhc.W_post.detach(), expected_W_post, atol=1e-6, rtol=1e-6)
+    # All α-gates start at 0.01 (the paper's learnable temperature).
+    assert_close(mhc.alpha_pre.detach(), torch.tensor([0.01]))
+    assert_close(mhc.alpha_post.detach(), torch.tensor([0.01]))
+    assert_close(mhc.alpha_res.detach(), torch.tensor([0.01]))
+
+    # Biases: b_pre = b_post = [1, -1] (main channel +1, shadow −1).
+    assert_close(mhc.b_pre.detach()[0, 0], torch.tensor(1.0))
+    assert_close(mhc.b_pre.detach()[0, 1], torch.tensor(-1.0))
+    assert_close(mhc.b_post.detach()[0, 0], torch.tensor(1.0))
+    assert_close(mhc.b_post.detach()[0, 1], torch.tensor(-1.0))
+
+    # b_res = [0, -8]: 0 on the identity permutation, −8 on the swap.
+    assert_close(mhc.b_res.detach()[0, 0], torch.tensor(0.0))
+    assert_close(mhc.b_res.detach()[0, 1], torch.tensor(-8.0))
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -290,7 +296,7 @@ def test_attnres_uniform_mean_generalises_to_n_blocks() -> None:
         (0, "standard", "h_prev + (sublayer outputs)", True),
         (1, "rr", "σ(+3)·h_prev + y ≈ 0.953·h_prev + y", False),
         (2, "vega", "σ(+3)·h_prev + y ≈ 0.953·h_prev + y", False),
-        (3, "mhc", "h_prev + y (channel 0 only)", True),
+        (3, "mhc", "H_res·H + 2σ(±1)·y ≈ H + 1.462·y[0] + 0.538·y[1]", False),
         (4, "attnres", "mean([*blocks, partial_block])", None),
     ],
 )

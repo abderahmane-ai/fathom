@@ -248,28 +248,32 @@ class TransformerLayer(nn.Module):
     ) -> torch.Tensor:
         """Forward pass for hyper_connection (mHC) mode.
 
-        Applies pre/post-mix around each sublayer. At init, channel 0
-        accumulates standard Pre-LN residuals while channel 1 stays at its
-        initial state (the embedding broadcast). Off-diagonal entries of
-        W_pre / W_post are learned during training to route information
-        between channels.
+        Applies mHC-Lite (arXiv:2601.05732) pre/post-mix around each
+        sublayer.  At init (paper's protocol) the H_pre / H_post / H_res
+        matrices are not identity, so the cell does not reduce to a bit-
+        for-bit standard residual on the main channel — see
+        ``test_design_ladder.py::test_mhc_init_contract_at_init`` and
+        METHODOLOGY.md §5.2 for the exact init values and their
+        interpretation.
 
         Args:
-            H: m-channel residual state, shape (B, S, m, d).
+            H: n-channel residual state, shape (B, S, n, d).
             _layer_idx: 0-based layer index (unused; reserved for future
-                per-layer modulation of W_pre / W_post).
+                per-layer modulation of the H_* parameters).
 
         Returns:
-            New m-channel residual state of shape (B, S, m, d).
+            New n-channel residual state of shape (B, S, n, d).
         """
         if self.residual_mode != "hyper_connection":
             raise ValueError(f"forward_hyperconnection called in mode '{self.residual_mode}'.")
 
-        H_pre = self.hc.pre_mix(H)
-        x_main = H_pre.select(dim=-2, index=0)
-        y_attn = self.attn(self.ln_1(x_main))
-        H_after_attn = self.hc.post_mix(H_pre, y_attn)
-        x_mid_main = H_after_attn.select(dim=-2, index=0)
-        y_ffn = self.ffn(self.ln_2(x_mid_main))
+        # Attention sublayer wrapped in mHC.
+        x = self.hc.pre_mix(H)  # (B, S, d) — mixed sublayer input
+        y_attn = self.attn(self.ln_1(x))
+        H_after_attn = self.hc.post_mix(H, y_attn)  # (B, S, n, d)
+
+        # FFN sublayer wrapped in mHC (pre-mix recomputed since H changed).
+        x = self.hc.pre_mix(H_after_attn)
+        y_ffn = self.ffn(self.ln_2(x))
         H_new = self.hc.post_mix(H_after_attn, y_ffn)
         return H_new

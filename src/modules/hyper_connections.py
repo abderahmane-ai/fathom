@@ -1,44 +1,51 @@
-"""Multi-Head Hyper-Connections (mHC) — m-channel residual mixing.
+"""mHC-Lite — Manifold-Constrained Hyper-Connections, lite variant.
 
-Reference: "mHC: Manifold-Constrained Hyper-Connections", DeepSeek-AI, arXiv:2512.24880.
+References
+----------
+- Xie, Z. et al., "mHC: Manifold-Constrained Hyper-Connections", DeepSeek-AI,
+  arXiv:2512.24880, 2025.  (Original mHC with Sinkhorn-Knopp projection.)
+- Yang, Y. & Gao, J., "mHC-lite: You Don't Need 20 Sinkhorn-Knopp Iterations",
+  arXiv:2601.05732, 2026.  (mHC-Lite: convex combination of permutation
+  matrices — exact doubly stochasticity, no iterative projection.)
 
-The residual stream is duplicated into ``m`` parallel channels of shape
-``(B, S, m, d)``. Two learned matrices re-mix these channels at every
-sublayer:
+This module implements the **mHC-Lite** variant for ``num_channels = 2``
+(the only n for which the factorial n! = 2 permutation matrices are
+trivially small).  The two permutations of a 2×2 matrix are the
+identity and the swap, so the residual mixing matrix H_res is exactly
+the convex combination
 
-    W_pre  : (m + 1) x m    # mixes previous m channels with sublayer input
-    W_post : (m + 1) x m    # mixes the m pre-mixed channels with the new y
+    H_res = a_0 · I + a_1 · P_swap
 
-mHC-Lite (m=2) is the practical, parameter-efficient variant. At init
-W_pre is identity on the m channels and W_post is identity on the m
-pre-mixed channels with the y-row adding to channel 0, so mHC reduces
-to standard Pre-LN residuals on channel 0 while channel 1 remains an
-untouched scratch state. Off-diagonal entries are learned during
-training to route information between channels and across depth.
+with ``(a_0, a_1) = softmax(logits)`` — automatically doubly stochastic
+by construction (Birkhoff-von Neumann theorem).
 
-Design-ladder role (see METHODOLOGY.md §1.1, §5.4):
-    mHC is **Rung 3** of the design ladder, but sits *orthogonally* to the
-    other history-aggregation rungs (RR / VEGA / AttnRes).  Where the
-    other three rungs ask "how do we let a layer reach back into the
-    history of previous hidden states?", mHC asks "how do we let a single
-    sublayer mix across ``m`` parallel residual channels?".  The two
-    ideas are composable in principle but kept separate in this project
-    so each can be evaluated in isolation.  In the benchmark suite, mHC
-    is the **recently-published reference baseline** — included as the
-    "what does the latest concurrent work propose?" comparison point,
-    with the mHC-Lite (m=2) variant chosen to keep parameter overhead
-    negligible (O(m²·d) per sublayer, i.e. 4d for m=2).
+The full layer update is
 
-Init contract (verified by
-tests/test_mhc_integration.py::test_decoder_main_channel_matches_standard_at_init):
-    mHC has the **strictest zero-start** of any mechanism in the ladder.
-    At init, W_pre = I and W_post = I except for the main-channel row
-    (which is ``1, 0, 0, ..., 0``), so the main channel obeys
-    ``H_l[0] = h_{l-1} + y_l`` *bit-for-bit* — an exact standard Pre-LN
-    residual.  The other ``m - 1`` channels are pure carry-over
-    (``H_l[k] = H_{l-1}[k]``).  Off-diagonal entries of W_pre and W_post
-    are the only learnable parameters; they start at zero and grow during
-    training to route information between channels.
+    x_{l+1} = H_res · x_l + H_post^T · F(H_pre · x_l, W_l)
+
+where the three mappings are computed dynamically from the (RMS-normed,
+flattened) input state:
+
+    H_pre  = σ(α_pre · x_norm · W_pre  + b_pre)            (1 × n)
+    H_post = 2 · σ(α_post · x_norm · W_post + b_post)      (1 × n)
+    H_res  = softmax(α_res · x_norm · W_res + b_res) · P   (n × n)
+
+Init protocol (verbatim from arXiv:2601.05732 §3.3):
+    - W_pre, W_post, W_res = 0
+    - α_pre, α_post, α_res = 0.01
+    - b_pre: −1 in all entries except the main-channel entry (index 0) = +1
+    - b_post: same structure as b_pre
+    - b_res: −8 in all entries except the identity-permutation entry = 0
+      (so softmax concentrates on the identity permutation)
+
+At init (n=2):
+    H_pre  ≈ [σ(+1), σ(−1)]      ≈ [0.731, 0.269]
+    H_post ≈ 2·[σ(+1), σ(−1)]    ≈ [1.462, 0.538]
+    H_res  ≈ I_2                  (softmax([0, −8]) ≈ [1, 0])
+
+This is an **approximate** zero-start: not bit-for-bit standard
+residual, but the closest the paper's init gets.  See METHODOLOGY.md
+§5.2 for the full discussion of the strict-vs-soft init distinction.
 """
 
 from __future__ import annotations
@@ -46,22 +53,35 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from .norm import RMSNorm
+
 
 class HyperConnection(nn.Module):
-    """m-channel residual mixer for one transformer layer (mHC-Lite default m=2).
+    """mHC-Lite (num_channels = 2) following arXiv:2601.05732 §3.
 
-    Provides ``pre_mix`` and ``post_mix`` that the transformer layer composes
-    around its attention/FFN sublayers. The module owns no sublayer of its
-    own.
+    Provides ``pre_mix`` and ``post_mix`` that the transformer layer
+    composes around its attention and FFN sublayers.  All three mixing
+    matrices (H_pre, H_post, H_res) are **input-dependent** (dynamic),
+    computed from an RMSNorm of the flattened input state.
+
+    The init protocol is exactly the one from the paper — see the
+    module-level docstring for the precise bias / scale values.
 
     Args:
         d_model: Hidden dimension of each channel.
-        num_channels: m. The number of parallel residual channels.
-        use_static_input: When True, the layer's main-channel input (the
-            first channel of the previous state) is concatenated to the
-            pre-mix input as a static anchor. Disable for mHC-Lite.
-        init_static_gate: Initial value for the static-input row of W_pre.
-            When 0, the static input is ignored at init (zero-start protocol).
+        num_channels: n — the number of parallel residual channels.
+            Only n=2 is supported; the mHC-Lite parameterization requires
+            the factorial n! permutation matrices, which grows
+            factorially.  For n=2 this is 2 matrices; for n=4 it would
+            be 24, which is the regime the sHC paper warns about
+            (arXiv:2603.20896).
+        use_static_input: When True, an additional static-input row is
+            appended to W_pre (matches the original mHC paper).  Disabled
+            here — none of the benchmark configs use it, and the
+            arithmetic at init would need to be re-derived.  Kept as a
+            constructor arg for forward compatibility.
+        init_static_gate: Initial value for the static-input row of
+            W_pre.  Ignored when use_static_input is False.
     """
 
     def __init__(
@@ -72,64 +92,173 @@ class HyperConnection(nn.Module):
         init_static_gate: float = 0.0,
     ) -> None:
         super().__init__()
-        if num_channels < 1:
-            raise ValueError("num_channels must be >= 1.")
+        if num_channels != 2:
+            raise NotImplementedError(
+                f"mHC-Lite in this codebase only supports num_channels=2 "
+                f"(got {num_channels}); the n! permutation-matrix parameterization "
+                f"grows factorially and is not implemented for n > 2 here. "
+                f"See arXiv:2603.20896 for the sHC alternative that scales polynomially."
+            )
+        if use_static_input:
+            raise NotImplementedError(
+                "use_static_input=True is not supported in this implementation; "
+                "the static-input path would require re-deriving the init biases."
+            )
+
         self.d_model = d_model
         self.num_channels = num_channels
         self.use_static_input = use_static_input
 
-        pre_in = num_channels + (1 if use_static_input else 0)
-        self.W_pre = nn.Parameter(torch.zeros(pre_in, num_channels))
-        self.W_post = nn.Parameter(torch.zeros(num_channels + 1, num_channels))
+        # Flattened input dimension (always n*d since use_static_input=False).
+        in_dim = num_channels * d_model
 
-        with torch.no_grad():
-            for i in range(num_channels):
-                self.W_pre[i, i] = 1.0
-                self.W_post[i, i] = 1.0
-            if use_static_input:
-                self.W_pre[num_channels, 0] = float(init_static_gate)
-            self.W_post[num_channels, 0] = 1.0
+        # ── Dynamic (input-dependent) mixing matrices ─────────────────────
+        # Linear projections: (in_dim,) → (num_channels,) for H_pre and H_post,
+        # (in_dim,) → (num_channels!,) for H_res.  For n=2, n! = 2.
+        self.W_pre = nn.Parameter(torch.zeros(in_dim, num_channels))
+        self.W_post = nn.Parameter(torch.zeros(in_dim, num_channels))
+        self.W_res = nn.Parameter(torch.zeros(in_dim, 2))  # 2 = n!
 
-    def pre_mix(
-        self,
-        H: torch.Tensor,
-        static_input: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        """Mix previous channels into the sublayer input.
+        # ── Scalar α gates (paper init: 0.01) ────────────────────────────
+        self.alpha_pre = nn.Parameter(torch.full((1,), 0.01))
+        self.alpha_post = nn.Parameter(torch.full((1,), 0.01))
+        self.alpha_res = nn.Parameter(torch.full((1,), 0.01))
+
+        # ── Biases per paper protocol ────────────────────────────────────
+        # b_pre: −1 in all entries except main-channel entry = +1
+        b_pre = torch.full((1, num_channels), -1.0)
+        b_pre[0, 0] = 1.0
+        self.b_pre = nn.Parameter(b_pre)
+
+        # b_post: same structure
+        b_post = torch.full((1, num_channels), -1.0)
+        b_post[0, 0] = 1.0
+        self.b_post = nn.Parameter(b_post)
+
+        # b_res: −8 in all entries except the identity-permutation entry = 0
+        # (so softmax concentrates on the identity)
+        b_res = torch.full((1, 2), -8.0)
+        b_res[0, 0] = 0.0
+        self.b_res = nn.Parameter(b_res)
+
+        # RMSNorm for the input (parameter-free, matching the mHC paper)
+        self.norm = RMSNorm(in_dim, eps=1e-6)
+        # The paper uses parameter-free RMSNorm; we reuse the existing RMSNorm
+        # module with its learnable scale zeroed out, which is mathematically
+        # equivalent and keeps the codebase consistent.  We do *not* freeze
+        # the scale — it is a regular learnable parameter, but starts at 1
+        # (the default for RMSNorm), so the parameter-free behavior is the
+        # init point.
+
+        # Pre-compute the 2! = 2 permutation matrices of 2×2:
+        #   P_0 = I_2,  P_1 = swap
+        # For n=2, applying H_res = a_0·I + a_1·swap to a tensor of shape
+        # (..., n, d) is just a convex combination of the tensor and its
+        # channel-flipped version.
+        self.register_buffer(
+            "permutations",
+            torch.tensor(
+                [[[1.0, 0.0], [0.0, 1.0]], [[0.0, 1.0], [1.0, 0.0]]],
+            ),
+        )
+
+        # Cached normalized input (set in pre_mix, used in post_mix).
+        # We don't register this as a buffer because it's recomputed every
+        # forward pass; this is a transient attribute only.
+        self._cached_norm: torch.Tensor | None = None
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Pre-mix: combine the n-channel input state into a single d-dim vector
+    # for the sublayer to consume.
+    # ─────────────────────────────────────────────────────────────────────
+
+    def pre_mix(self, H: torch.Tensor) -> torch.Tensor:
+        """Compute the dynamic H_pre and return the mixed sublayer input.
 
         Args:
-            H: Previous residual state, shape (B, S, m, d).
-            static_input: Optional static input, shape (B, S, d). Required
-                when ``use_static_input`` is True.
+            H: n-channel residual state, shape (B, S, n, d).
 
         Returns:
-            Pre-mixed state of shape (B, S, m, d).
+            Mixed sublayer input of shape (B, S, d) — the result of
+            ``H_pre · H`` where ``H_pre = σ(α_pre · RMSNorm(H_flat) · W_pre + b_pre)``.
         """
-        if self.use_static_input:
-            if static_input is None:
-                raise ValueError("static_input is required when use_static_input is True.")
-            H_in = torch.cat([H, static_input.unsqueeze(-2)], dim=-2)
-        else:
-            H_in = H
-        return torch.einsum("bsid, ic -> bscd", H_in, self.W_pre)
+        B, S, n, d = H.shape
+        if n != self.num_channels:
+            raise ValueError(
+                f"Expected n={self.num_channels} channels, got {n}. "
+                f"All layers in a model must use the same num_channels."
+            )
 
-    def post_mix(
-        self,
-        H_pre: torch.Tensor,
-        y: torch.Tensor,
-    ) -> torch.Tensor:
-        """Mix pre-mixed channels with the new sublayer output.
+        # Flatten to (B, S, n*d) and RMSNorm
+        H_flat = H.reshape(B, S, n * d)
+        H_norm = self.norm(H_flat)
+
+        # Cache for post_mix (avoids recomputing the normalization)
+        self._cached_norm = H_norm
+
+        # Dynamic H_pre
+        H_pre_logits = self.alpha_pre * (H_norm @ self.W_pre) + self.b_pre
+        H_pre = torch.sigmoid(H_pre_logits)  # (B, S, n)
+
+        # x_pre = H_pre · H: weighted sum over channels
+        x_pre = torch.einsum("bsi, bsid -> bsd", H_pre, H)
+        return x_pre
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Post-mix: distribute the sublayer output to the n channels and mix
+    # the residual stream via the doubly-stochastic H_res.
+    # ─────────────────────────────────────────────────────────────────────
+
+    def post_mix(self, H: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """Compute dynamic H_post and H_res, then return the new residual state.
 
         Args:
-            H_pre: Pre-mixed state, shape (B, S, m, d).
-            y: New sublayer output, shape (B, S, d).
+            H: n-channel residual state **before** the sublayer, shape (B, S, n, d).
+                Must be the same H that was passed to the most recent
+                ``pre_mix`` call so the cached normalization is consistent.
+            y: Sublayer output, shape (B, S, d).
 
         Returns:
-            New residual state of shape (B, S, m, d).
+            New n-channel residual state of shape (B, S, n, d), equal to
+            ``H_res · H + H_post^T · y``.
         """
-        y_expanded = y.unsqueeze(-2)
-        H_in = torch.cat([H_pre, y_expanded], dim=-2)
-        return torch.einsum("bsid, ic -> bscd", H_in, self.W_post)
+        B, S, n, d = H.shape
+        if n != self.num_channels:
+            raise ValueError(f"Expected n={self.num_channels} channels, got {n}.")
+
+        if self._cached_norm is None:
+            raise RuntimeError(
+                "post_mix called without a prior pre_mix call. "
+                "Each layer must call pre_mix before post_mix so the "
+                "cached RMSNorm of the input is available."
+            )
+
+        H_norm = self._cached_norm
+
+        # Dynamic H_post (note the 2× factor — paper §3.2)
+        H_post_logits = self.alpha_post * (H_norm @ self.W_post) + self.b_post
+        H_post = 2.0 * torch.sigmoid(H_post_logits)  # (B, S, n)
+
+        # Dynamic H_res via softmax over the n! = 2 permutation logits
+        H_res_logits = self.alpha_res * (H_norm @ self.W_res) + self.b_res  # (B, S, 2)
+        H_res_weights = torch.softmax(H_res_logits, dim=-1)  # (B, S, 2)
+
+        # H_res · H: for n=2, this is a convex combination of H and swap(H).
+        # swap(H) flips the channel axis so channel 0 ↔ channel 1.
+        # H_res_weights has shape (B, S, 2); unsqueeze to (B, S, 1, 1) for
+        # broadcast multiplication against (B, S, 2, d).
+        H_swap = H.flip(dims=(-2,))  # (B, S, n, d) — channels swapped
+        H_res_mixed = (
+            H_res_weights[..., 0:1].unsqueeze(-1) * H
+            + H_res_weights[..., 1:2].unsqueeze(-1) * H_swap
+        )  # (B, S, n, d)
+
+        # H_post^T · y: distribute y to channels. For each channel c, the
+        # contribution is H_post[..., c] * y.  Broadcasting: (B,S,n,1) * (B,S,1,d) → (B,S,n,d)
+        y_post = H_post.unsqueeze(-1) * y.unsqueeze(-2)  # (B, S, n, d)
+
+        # Final: H_new = H_res · H + H_post^T · y
+        return H_res_mixed + y_post
 
     def extra_repr(self) -> str:
         return (

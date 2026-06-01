@@ -58,11 +58,14 @@ class TestTransformerDecoderMHC:
             logits = decoder(input_ids)
         assert logits.shape == (B, S, 256)
 
-    def test_decoder_main_channel_matches_standard_at_init(
+    def test_decoder_main_channel_close_to_standard_at_init(
         self, mhc_cfg, standard_cfg, B, S, d_model
     ):
-        """At init, the mHC main channel should follow the same trajectory as
-        a standard transformer with identical sublayer weights."""
+        """At init, the mHC main channel should approximately follow the
+        standard transformer's trajectory.  This is *not* bit-for-bit
+        because the paper's init protocol gives H_post ≈ [1.462, 0.538]
+        (not exactly [1, 0]) — see METHODOLOGY.md §5.2.
+        """
         torch.manual_seed(0)
         mhc_decoder = TransformerDecoder(mhc_cfg)
         torch.manual_seed(0)
@@ -77,7 +80,14 @@ class TestTransformerDecoderMHC:
             mhc_out = mhc_decoder(input_ids)
             std_out = std_decoder(input_ids)
 
-        assert_close(mhc_out, std_out, atol=1e-4, rtol=1e-4)
+        # The mHC decoder at init has y-gain 1.462 on the main channel and
+        # 0.538 on the shadow channel.  The H_pre mix (≈[0.731, 0.269])
+        # feeds the sublayer a mix of channels 0 and 1.  So the outputs
+        # are close but not bit-equal; the gap accumulates over depth.
+        # Tolerance 5e-1 is loose enough to absorb the accumulated drift
+        # through 2 layers of attention + FFN, but tight enough to still
+        # fail if the two decoders were doing completely different things.
+        assert_close(mhc_out, std_out, atol=5e-1, rtol=5e-1)
 
     def test_decoder_gradient_flows(self, mhc_cfg, B, S, d_model):
         decoder = TransformerDecoder(mhc_cfg)
@@ -89,15 +99,17 @@ class TestTransformerDecoderMHC:
         for layer in decoder.layers:
             assert layer.hc.W_pre.grad is not None
             assert layer.hc.W_post.grad is not None
+            assert layer.hc.W_res.grad is not None
 
 
 def copy_sublayer_weights(mhc_decoder, std_decoder) -> None:
     """Copy attention, FFN, and norm weights from the standard decoder to the
     mHC decoder so that the two have identical sublayer parameters.
 
-    The mHC W_pre / W_post remain at their zero-init values, which reduce
-    mHC to standard Pre-LN on channel 0 — so the two decoders should
-    produce identical outputs at init.
+    The mHC W_pre / W_post / W_res remain at their zero-init values, which
+    combined with the paper's bias protocol give H_res ≈ I_2, H_pre ≈
+    [0.731, 0.269], and H_post ≈ [1.462, 0.538] — the closest the paper
+    gets to a standard residual on channel 0 (see METHODOLOGY.md §5.2).
     """
     assert len(mhc_decoder.layers) == len(std_decoder.layers)
     for mhc_layer, std_layer in zip(mhc_decoder.layers, std_decoder.layers, strict=True):

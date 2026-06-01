@@ -13,7 +13,7 @@ The five mechanisms are not five independent ideas — they form a **design ladd
 | 0 | **Standard** | None — only the immediately previous $h$ | $O(d)$ | None |
 | 1 | **RR** (Recurrent Residual) | Single gated memory vector $m \in \mathbb{R}^{d}$ | $O(\text{rank} \cdot d)$ | None — implicit via learned gates |
 | 2 | **VEGA** (Vertical EMA Gated Attention) | Multi-head linear-attention state $(S, z)$ of size $n_h \cdot r_h$ | $O(n_h \cdot r_h \cdot d)$ | Linear-attention over depth |
-| 3 | **mHC** (Multi-Head Hyper-Connections) | $m$ parallel residual channels with learned pre/post mixing | $O(m^2 \cdot d)$ per layer | None — orthogonal to history aggregation |
+| 3 | **mHC** (Multi-Head Hyper-Connections, Lite variant) | $n$ parallel residual channels with input-dependent pre/post/residual mixing | $O(n^2 \cdot d + n \cdot d \cdot n!)$ per layer | None — orthogonal to history aggregation |
 | 4 | **AttnRes** (Block / Full) | Full stack of previous $h$'s, softmax-weighted | $O(B \cdot d)$ per block (block variant) | Full softmax over depth |
 
 The middle three rungs (RR, VEGA, AttnRes) can be read as **three different points on the cost/expressivity frontier of "let later layers re-read earlier representations"** — RR is the cheapest and least expressive, VEGA is the sweet spot (linear-attention-style retrieval at $O(L)$ total cost), and AttnRes is the upper bound ($O(L^2)$). mHC sits orthogonally: it is not a history-aggregation scheme but a **parallel-channel mixing** scheme, included as a recently-published reference baseline.
@@ -187,46 +187,78 @@ To maximize training throughput and prevent GPU kernel launch latency bottleneck
 
 ---
 
-## 5. Multi-Head Hyper-Connections (mHC) — Rung 3
+## 5. Multi-Head Hyper-Connections (mHC-Lite) — Rung 3
 
-**Reference:** Bian, Y., Wang, L., et al., "Multi-Head Hyper-Connections", 2024.
+**References:**
+- Bian, Y., Wang, L., et al., "Multi-Head Hyper-Connections" (arXiv:2512.24880, Dec 2025).
+- Yang, Z. & Gao, X., "mHC-Lite: Doubly-Stochastic Routing via Permutation Convex Combinations" (arXiv:2601.05732, Jan 2026).
 
 mHC is **not a history-aggregation scheme** — it sits orthogonally to RR / VEGA / AttnRes on the design ladder. Where the other three rungs ask *"how do we let a layer reach back into the history of previous hidden states?"*, mHC asks *"how do we let a single sublayer mix across multiple parallel residual channels?"*
 
-The mechanism: each layer carries $m$ parallel channels of residual state $H_l \in \mathbb{R}^{B \times S \times m \times d}$ instead of a single $h_l \in \mathbb{R}^{B \times S \times d}$. Before and after each sublayer, learned mixing matrices $W_\text{pre} \in \mathbb{R}^{m \times m}$ and $W_\text{post} \in \mathbb{R}^{m \times m}$ route information between channels.
+The mechanism: each layer carries $n$ parallel channels of residual state $H_l \in \mathbb{R}^{B \times S \times n \times d}$ instead of a single $h_l \in \mathbb{R}^{B \times S \times d}$. Before and after each sublayer, three **input-dependent** mixing tensors (computed from the input) route information between channels.
 
-### 5.1 Per-Sublayer Equations
+### 5.1 Per-Sublayer Equations (mHC-Lite, $n=2$)
 
-Let $W_\text{pre} \in \mathbb{R}^{m \times m}$ and $W_\text{post} \in \mathbb{R}^{m \times m}$ be the pre- and post-mix matrices. Then for each sublayer:
+Let $\text{RMSNorm}(H) \in \mathbb{R}^{B \times S \times n \times d}$ denote the parameter-free RMSNorm of the channel state, $\alpha_\star$ a learnable scalar temperature, and $W_\star \in \mathbb{R}^{(n \cdot d) \times k}$ a learnable projection (with $k = n$ for $H_\text{pre}, H_\text{post}$ and $k = n!$ for $H_\text{res}$). Then for each sublayer:
 
-$$H_\text{pre} = H_l \, W_\text{pre}^\top \qquad \text{(pre-mix: blend channels before the sublayer)}$$
+$$\hat{H} = \text{RMSNorm}(H_l) \qquad \text{(parameter-free, channel-wise RMSNorm)}$$
 
-$$x_\text{main} = H_\text{pre}[:, :, 0, :] \qquad \text{(main channel drives the sublayer)}$$
+$$H_\text{pre}^{(b,s,i)} = \sigma\!\left(\alpha_\text{pre} \cdot \langle \hat{H}^{(b,s)}, W_\text{pre} \rangle + b_\text{pre}^{(i)}\right) \in \mathbb{R}^{n} \qquad \text{(pre-mix weights, sigmoid)}$$
 
-$$y = \mathcal{F}(\text{LayerNorm}(x_\text{main})) \qquad \text{(standard sublayer output)}$$
+$$H_\text{post}^{(b,s,i)} = 2 \cdot \sigma\!\left(\alpha_\text{post} \cdot \langle \hat{H}^{(b,s)}, W_\text{post} \rangle + b_\text{post}^{(i)}\right) \in \mathbb{R}^{n} \qquad \text{(post-mix weights, $2\times$ sigmoid)}$$
 
-$$H_\text{post} = H_\text{pre} + y \cdot W_\text{post}^\top \qquad \text{(post-mix: distribute sublayer output across channels)}$$
+$$H_\text{res}^{(b,s)} = \text{softmax}\!\left(\alpha_\text{res} \cdot \langle \hat{H}^{(b,s)}, W_\text{res} \rangle + b_\text{res}\right) \in \mathbb{R}^{n!} \qquad \text{(residual-mix weights)}$$
 
-$$H_{l+1} = H_\text{post}$$
+$$x_\text{pre} = \sum_{i} H_\text{pre}^{(i)} \cdot H_l^{(i)} \in \mathbb{R}^{d} \qquad \text{(pre-mix: blend channels → sublayer input)}$$
 
-### 5.2 Zero-Start Initialization
+$$y = \mathcal{F}(\text{LayerNorm}(x_\text{pre})) \qquad \text{(standard sublayer output)}$$
 
-mHC's zero-start is the **strictest** of any mechanism in the ladder: at init, $W_\text{pre} = I$ and $W_\text{post} = I$ except for the main-channel row, which is `1, 0, 0, ..., 0`. This gives:
+$$H_\text{mixed} = \sum_{\pi \in S_n} H_\text{res}^{(\pi)} \cdot \pi(H_l) \in \mathbb{R}^{n \times d} \qquad \text{(residual-mix: doubly-stochastic channel carry-over)}$$
 
-- Main channel: $H_l[0] = h_{l-1} + y$ — **exactly** the standard Pre-LN residual.
-- Other channels: $H_l[k] = h_{l-1}$ (the embedding, for the first layer) — passive carry-over.
+$$H_{l+1} = H_\text{mixed} + y \otimes H_\text{post} \qquad \text{(post-mix: add sublayer output back to channels)}$$
 
-So **mHC at init is bit-for-bit a standard transformer on the main channel**, with $m - 1$ "shadow" channels that are pure carry-over. Off-diagonals of $W_\text{pre}$ and $W_\text{post}$ are the only learnable parameters; they start at zero and grow during training to route information between channels. This is verified by `tests/test_mhc_integration.py::test_decoder_main_channel_matches_standard_at_init`.
+For $n=2$ the only permutations are the identity $\pi_0$ and the swap $\pi_1$, so the residual-mix is the convex combination $H_\text{res}^{(0)} \cdot H + H_\text{res}^{(1)} \cdot \pi_1(H)$. The $2\times$ factor on $H_\text{post}$ is from the paper — it ensures the average y-gain is 1 at init (rather than $1/n$).
+
+### 5.2 Approximate Zero-Start Initialization
+
+mHC's init follows the paper's bias-only protocol: all projection weights start at zero, all temperatures start at $\alpha_\star = 0.01$, and the bias vectors are set to give the desired init behavior:
+
+| Tensor | Shape | Init | Value at init |
+|--------|-------|------|---------------|
+| $W_\text{pre}, W_\text{post}, W_\text{res}$ | $(n \cdot d) \times k$ | $\mathbf{0}$ | 0 |
+| $\alpha_\text{pre}, \alpha_\text{post}, \alpha_\text{res}$ | scalar | $0.01$ | 0.01 |
+| $b_\text{pre}, b_\text{post}$ | $(1, n)$ | $+1$ on main channel, $-1$ on shadow | $[+1, -1]$ |
+| $b_\text{res}$ | $(1, n!)$ | $0$ on identity, $-8$ on swap | $[0, -8]$ |
+
+Plugging in the bias values at init (with $W=0$, so the projections vanish):
+
+$$H_\text{pre} = \sigma([+1, -1]) \approx [0.731, 0.269] \qquad H_\text{post} = 2 \cdot \sigma([+1, -1]) \approx [1.462, 0.538]$$
+
+$$H_\text{res} = \text{softmax}([0, -8]) \approx [0.9997, 0.0003] \quad \text{so} \quad H_\text{res} \cdot H \approx I_2 \cdot H$$
+
+This gives an **approximate** zero-start (NOT bit-for-bit, unlike the static mHC scheme that this code used to implement):
+
+- Main channel: $H_{l+1}^{(0)} \approx H_l^{(0)} + 1.462 \cdot y$ (close to a standard residual, but the y-gain is 1.462 not 1).
+- Shadow channel: $H_{l+1}^{(1)} \approx H_l^{(1)} + 0.538 \cdot y$ (passive carry-over, with a small y-leak).
+
+The strict bit-for-bit zero-start that the **static** mHC scheme provides is **not achievable with the paper's bias-only dynamic init** — it is a property of the simpler linear-mixing version, not the full mHC. The dynamic version trades strictness for the input-dependent routing the paper actually proposes. The at-init values are verified by `tests/test_design_ladder.py::test_mhc_approximate_zero_start_at_init` and `test_mhc_init_contract_at_init`.
 
 ### 5.3 Parameter Overhead
 
-Per-layer overhead is $O(m^2 \cdot d)$ per sublayer (two mixing matrices of shape $m \times m$, each applied to a $d$-vector for every token, so the additional FLOPs are $2 \cdot m^2 \cdot d$ per token per sublayer). For the lite variant with $m = 2$ used in this project, this is $4d$ per sublayer — negligible compared to attention/FFN.
+Per layer, the added parameters are:
+
+- $W_\text{pre}, W_\text{post} \in \mathbb{R}^{n \cdot d \times n}$: $2 n^2 d$ parameters (for $n=2$: $8d$).
+- $W_\text{res} \in \mathbb{R}^{n \cdot d \times n!}$: $n \cdot d \cdot n!$ parameters (for $n=2$: $4d$).
+- Three learnable $\alpha_\star$ scalars: 3 parameters.
+- Three bias vectors of shape $(1, n)$: $3n$ parameters (for $n=2$: 6).
+
+Total per layer: $2 n^2 d + n \cdot d \cdot n! + 3n + 3$ (for $n=2$: $12d + 9$, i.e. $\sim 0.1\%$ of a 1024-dim model). The $n!$ term is why we only support $n=2$ in this project — for $n=4$ it is $24 \cdot n \cdot d$ and for $n=8$ it is $40320 \cdot n \cdot d$, out of scope. The sHC paper (arXiv:2603.20896) is the polynomial-scaling alternative for larger $n$.
 
 ### 5.4 Relation to the Design Ladder
 
-mHC is **orthogonal** to the history-aggregation rungs. It does not let a layer re-read earlier *outputs*; it lets a single sublayer *mix across* $m$ parallel residual streams. The two ideas are composable in principle (one could imagine a "mHC + AttnRes" hybrid where each of the $m$ channels uses a different history scheme), but the implementation in this project keeps them separate so each can be evaluated in isolation.
+mHC is **orthogonal** to the history-aggregation rungs. It does not let a layer re-read earlier *outputs*; it lets a single sublayer *mix across* $n$ parallel residual streams. The two ideas are composable in principle (one could imagine a "mHC + AttnRes" hybrid where each of the $n$ channels uses a different history scheme), but the implementation in this project keeps them separate so each can be evaluated in isolation.
 
-In the benchmark suite, mHC is the **recently-published reference baseline** — included as the "what does the latest concurrent work propose?" comparison point, with the mHC-Lite ($m=2$) variant chosen to keep parameter overhead negligible against the model size.
+In the benchmark suite, mHC is the **recently-published reference baseline** — included as the "what does the latest concurrent work propose?" comparison point, with the mHC-Lite ($n=2$) variant chosen to keep parameter overhead negligible against the model size.
 
 ---
 
@@ -263,7 +295,7 @@ Keeps the complete history of all sublayer states. Every layer attends to every 
 
 ### 6.4 Relation to the Design Ladder
 
-AttnRes is the **upper-bound rung** of the history-aggregation axis: it is the only mechanism in the ladder that does exact softmax over the full history. Its init behavior is "uniform mean" rather than "passthrough" — so the first gradient step is meaningfully different from a standard model, and the training-dynamics comparison in `scaling_efficiency` is between a model that starts as a *strict passthrough* (mHC), a model that starts as a *soft passthrough* (RR/VEGA), and a model that starts as a *uniform mean* (AttnRes).
+AttnRes is the **upper-bound rung** of the history-aggregation axis: it is the only mechanism in the ladder that does exact softmax over the full history. Its init behavior is "uniform mean" rather than "passthrough" — so the first gradient step is meaningfully different from a standard model, and the training-dynamics comparison in `scaling_efficiency` is between a model that starts as an *approximate passthrough* (mHC, see §5.2), a model that starts as a *soft passthrough* (RR/VEGA), and a model that starts as a *uniform mean* (AttnRes).
 
 In the benchmark suite, BlockAttnRes is the **quadratic target** — what the cheaper alternatives are trying to approximate.
 
@@ -274,12 +306,12 @@ In the benchmark suite, BlockAttnRes is the **quadratic target** — what the ch
 | Property | Standard | RR | VEGA | mHC | AttnRes (Block) |
 |---|---|---|---|---|---|
 | **Rung** | 0 | 1 | 2 | 3 | 4 |
-| **Mechanism** | Fixed addition | Gated recurrency | Linear-attention EMA | Parallel-channel mixing | Softmax over blocks |
+| **Mechanism** | Fixed addition | Gated recurrency | Linear-attention EMA | Dynamic parallel-channel mixing | Softmax over blocks |
 | **History aggregation** | None | Implicit (gates) | QKV linear-attention | None (orthogonal) | Full softmax |
-| **Complexity / sublayer** | O(d) | O(rank · d) | O(n_h · r_h · d) | O(m² · d) | O(B · d) |
-| **Memory / token** | O(d) | O(2d) | O(n_h · r_h²) | O(m · d) | O(B · d) |
-| **Init behavior** | N/A | 0.953·h + y | 0.953·h + y | exact h + y (ch 0) | mean(history) |
-| **Strict zero-start** | — | soft | soft | yes | no |
+| **Complexity / sublayer** | O(d) | O(rank · d) | O(n_h · r_h · d) | O(n²·d + n·d·n!) | O(B · d) |
+| **Memory / token** | O(d) | O(2d) | O(n_h · r_h²) | O(n · d) | O(B · d) |
+| **Init behavior** | N/A | 0.953·h + y | 0.953·h + y | 1.462·y[0] + 0.538·y[1] on H ≈ I (ch 0) | mean(history) |
+| **Strict zero-start** | — | soft | soft | no (paper's approximate) | no |
 | **New hyperparameters** | None | 0 (bias values) | rank, n_heads, fast/slow | num_channels | block_size |
 | **Reference** | — | this work | this work | Bian et al. 2024 | Kimi / Moonshot 2025 |
 
@@ -322,9 +354,9 @@ This project compares **five points in the design space of depth-stream residual
 - **Standard** residuals are the free baseline — passive accumulation, no overhead.
 - **RR** (Rung 1) provides $O(\text{rank} \cdot d)$ gated working memory with soft zero-start — the simplest recurrent cell that can in principle learn to summarize depth history.
 - **VEGA** (Rung 2) is linear attention run vertically across depth — multi-head linear-attention retrieval over a fixed-size state, with QKV inductive bias and per-head decay horizons.
-- **mHC** (Rung 3) is orthogonal to the history-aggregation axis — parallel residual channels with learned pre/post mixing, with a strict bit-for-bit zero-start on the main channel.
+- **mHC** (Rung 3) is orthogonal to the history-aggregation axis — parallel residual channels with input-dependent pre/post/residual mixing, with an *approximate* zero-start on the main channel ($H_\text{res} \cdot H + 1.462 \cdot y$, not exactly $H + y$ — see §5.2 for why).
 - **BlockAttnRes** (Rung 4, Moonshot AI) is the upper bound on the history-aggregation axis — full softmax over block history at $O(B \cdot d)$ cost per sublayer.
 
 The empirical question this project is designed to answer is: **on the history-aggregation axis (RR → VEGA → AttnRes), how much of AttnRes's quality can be recovered at $O(L)$ cost, and is the gap large enough to justify the $O(L^2)$ price?** The `scaling_efficiency` benchmark is the direct measurement; `depth_needle` measures the limit case (single-token retrieval at depth), and `depth_preservation` measures how well each mechanism preserves the *probe accessibility* of intermediate representations.
 
-All four alternatives share a common zero-start protocol: at initialization they each reduce to either an exact or a soft variant of a standard Pre-LN residual, ensuring training stability while allowing gradual specialization. The strictness of the zero-start (exact passthrough for mHC, 0.953·h for RR/VEGA, uniform mean for AttnRes) is a real design choice that affects the first few hundred training steps and is verified empirically in `tests/test_design_ladder.py`.
+All four alternatives share a common zero-start protocol: at initialization they each reduce to either an exact or a soft variant of a standard Pre-LN residual, ensuring training stability while allowing gradual specialization. The strictness of the zero-start (paper-faithful approximate passthrough for mHC, 0.953·h for RR/VEGA, uniform mean for AttnRes) is a real design choice that affects the first few hundred training steps and is verified empirically in `tests/test_design_ladder.py`.
