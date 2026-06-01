@@ -136,8 +136,7 @@ def _run_dps_evaluation(cfg: DictConfig, residual_mode: str, run_id: str) -> Non
             gps_scores.append(gps)
 
             log.info(
-                f"Layer {k} DPS: {dps:.4f} | GPS: {gps:.4f} "
-                f"(Dissim: {res['mean_dissim']:.4f})"
+                f"Layer {k} DPS: {dps:.4f} | GPS: {gps:.4f} (Dissim: {res['mean_dissim']:.4f})"
             )
 
     dri = calculate_dri(dps_scores)

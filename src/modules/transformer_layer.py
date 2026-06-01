@@ -45,9 +45,9 @@ class TransformerLayer(nn.Module):
         self.ln_1 = RMSNorm(config.d_model)
         self.ln_2 = RMSNorm(config.d_model)
         self.attn = Attention(config.d_model, config.n_heads, getattr(config, "dropout", 0.1))
-        self.ffn  = FeedForward(config.d_model, config.ff_dim, getattr(config, "dropout", 0.1))
+        self.ffn = FeedForward(config.d_model, config.ff_dim, getattr(config, "dropout", 0.1))
 
-        self.rr_cell:   RecurrentResidualCell | None = None
+        self.rr_cell: RecurrentResidualCell | None = None
         self.vega_cell: VEGACell | None = None
 
         if config.residual_mode == "recurrent_residual":
@@ -91,11 +91,11 @@ class TransformerLayer(nn.Module):
                 raise ValueError("attnres_block.block_size must be an even sublayer count ≥ 2.")
             self.layers_per_block: int = block_size // 2
             self.attn_res = BlockAttnRes(config.d_model)
-            self.ffn_res  = BlockAttnRes(config.d_model)
+            self.ffn_res = BlockAttnRes(config.d_model)
 
         elif config.residual_mode == "full_attnres":
             self.full_attn_res = FullAttnRes(config.d_model)
-            self.full_ffn_res  = FullAttnRes(config.d_model)
+            self.full_ffn_res = FullAttnRes(config.d_model)
 
         self.residual_mode: str = config.residual_mode
 
@@ -126,8 +126,8 @@ class TransformerLayer(nn.Module):
             )
 
         # Attention sublayer
-        x_norm  = self.ln_1(x)
-        y_attn  = self.attn(x_norm)
+        x_norm = self.ln_1(x)
+        y_attn = self.attn(x_norm)
 
         if self.residual_mode == "standard":
             h_mid, m_mid = x + y_attn, None
@@ -142,7 +142,7 @@ class TransformerLayer(nn.Module):
 
         # FFN sublayer
         h_norm = self.ln_2(h_mid)
-        y_ffn  = self.ffn(h_norm)
+        y_ffn = self.ffn(h_norm)
 
         if self.residual_mode == "standard":
             h_new, m_new = h_mid + y_ffn, None
@@ -211,14 +211,14 @@ class TransformerLayer(nn.Module):
         Returns:
             ``(history, h_new)`` — extended history and updated hidden state.
         """
-        h_in  = self.full_attn_res([*history, x])
+        h_in = self.full_attn_res([*history, x])
         y_attn = self.attn(self.ln_1(h_in))
-        h_mid  = x + y_attn
+        h_mid = x + y_attn
         history = [*history, h_mid]
 
-        h_in  = self.full_ffn_res(history)
-        y_ffn  = self.ffn(self.ln_2(h_in))
-        h_new  = h_mid + y_ffn
+        h_in = self.full_ffn_res(history)
+        y_ffn = self.ffn(self.ln_2(h_in))
+        h_new = h_mid + y_ffn
         history = [*history, h_new]
 
         return history, h_new

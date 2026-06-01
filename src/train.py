@@ -108,7 +108,10 @@ class LanguageModel(L.LightningModule):
         if bad_params:
             print(f"[DIAG step={step}] BAD parameters: {bad_params}")
         else:
-            print(f"[DIAG step={step}] All parameters look clean — NaN may originate in activations/ops.")
+            print(
+                f"[DIAG step={step}] All parameters look clean — "
+                "NaN may originate in activations/ops."
+            )
         print(f"[DIAG step={step}] *** end of parameter dump ***\n")
 
     def training_step(self, batch: torch.Tensor, _batch_idx: int) -> torch.Tensor:
@@ -122,7 +125,9 @@ class LanguageModel(L.LightningModule):
                 loss = ce_loss - reg
                 self.log("train/vega_reg", reg.detach(), on_step=True)
         self.log("train/loss", ce_loss, on_step=True, on_epoch=False, prog_bar=True)
-        self.log("train/ppl", torch.exp(ce_loss.detach().clamp(max=20.0)), on_step=True, on_epoch=False)
+        self.log(
+            "train/ppl", torch.exp(ce_loss.detach().clamp(max=20.0)), on_step=True, on_epoch=False
+        )
         self._log_needle_accuracy(batch, "train")
         return loss
 
@@ -152,7 +157,10 @@ class LanguageModel(L.LightningModule):
         self.log("grad/global_norm", total_norm, on_step=True)
         # Diagnostic: warn in stdout if any gradient is already NaN/Inf before clipping.
         if torch.isnan(total_norm) or torch.isinf(total_norm):
-            print(f"\n[DIAG step={self.global_step}] *** NaN/Inf GRADIENT NORM ({total_norm.item()}) ***")
+            print(
+                f"\n[DIAG step={self.global_step}] *** NaN/Inf GRADIENT NORM "
+                f"({total_norm.item()}) ***"
+            )
             for name, param in self.named_parameters():
                 if param.grad is None:
                     continue
@@ -186,8 +194,9 @@ class LanguageModel(L.LightningModule):
             correct = (preds[mask] == targets[mask]).float().sum()
             total = mask.float().sum()
         if total > 0:
-            self.log(f"{prefix}/needle_acc", correct / total, on_step=True, on_epoch=True,
-                     prog_bar=True)
+            self.log(
+                f"{prefix}/needle_acc", correct / total, on_step=True, on_epoch=True, prog_bar=True
+            )
 
     # pyrefly: ignore [bad-override]
     def configure_optimizers(self) -> dict[str, Any]:

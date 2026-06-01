@@ -7,7 +7,6 @@ import os
 import sys
 
 import modal
-from omegaconf import OmegaConf
 
 from benchmarks.common.artifacts import repo_root
 from benchmarks.common.configs import config_for_mode, load_benchmark_config, make_run_id
@@ -43,6 +42,7 @@ image = (
 artifact_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 app = modal.App("rr-iso-flop")
 
+
 def _prepare_remote() -> None:
     os.chdir(REMOTE_ROOT)
     sys.path.insert(0, REMOTE_ROOT)
@@ -65,14 +65,14 @@ def run_wide_shallow(run_id: str) -> None:
     _prepare_remote()
     from benchmarks.common.lightning_engine import run_benchmark
 
-    cfg = load_benchmark_config("scaling_efficiency") # Base it on scaling efficiency config
+    cfg = load_benchmark_config("scaling_efficiency")  # Base it on scaling efficiency config
     cfg = config_for_mode(cfg, "standard")
-    
+
     # Override for Wide & Shallow
     cfg.model.num_layers = 6
     cfg.model.d_model = 1024
     cfg.model.ff_dim = 1024 * 4
-    
+
     run_benchmark(cfg, BENCHMARK_NAME, "standard_wide", run_id)
     artifact_volume.commit()
 
@@ -91,12 +91,12 @@ def run_narrow_deep(run_id: str, mode: str = "vega") -> None:
 
     cfg = load_benchmark_config(BENCHMARK_NAME)
     cfg = config_for_mode(cfg, mode)
-    
+
     # Override for Narrow & Deep
     cfg.model.num_layers = 24
     cfg.model.d_model = 512
     cfg.model.ff_dim = 512 * 4
-    
+
     run_benchmark(cfg, BENCHMARK_NAME, f"{mode}_narrow", run_id)
     artifact_volume.commit()
 

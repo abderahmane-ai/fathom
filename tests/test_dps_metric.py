@@ -198,4 +198,3 @@ def test_gps_extractor():
     assert torch.allclose(res["xty_gps"], expected_xty_gps, atol=1e-4)
     assert torch.allclose(res["yty_gps"], expected_yty_gps, atol=1e-4)
     assert torch.allclose(res["target_variance_gps"], expected_variance_gps, atol=1e-3)
-

@@ -98,11 +98,11 @@ class Attention(nn.Module):
         super().__init__()
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads."
 
-        self.d_model  = d_model
-        self.n_heads  = n_heads
+        self.d_model = d_model
+        self.n_heads = n_heads
         self.head_dim = d_model // n_heads
 
-        self.qkv  = nn.Linear(d_model, 3 * d_model, bias=False)
+        self.qkv = nn.Linear(d_model, 3 * d_model, bias=False)
         self.proj = nn.Linear(d_model, d_model, bias=False)
         self.attn_dropout = dropout
 

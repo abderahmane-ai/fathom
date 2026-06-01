@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import gc
+import json
 import logging
 import os
 import sys
-import json
-import gc
 from pathlib import Path
 
 import modal
@@ -46,6 +46,7 @@ image = (
 artifact_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 app = modal.App("rr-inference-memory")
 
+
 def _prepare_remote() -> None:
     os.chdir(REMOTE_ROOT)
     sys.path.insert(0, REMOTE_ROOT)
@@ -53,9 +54,10 @@ def _prepare_remote() -> None:
     os.environ["BENCHMARK_VOLUME_NAME"] = VOLUME_NAME
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+
 @app.function(
     image=image,
-    gpu="A10G", # Use a smaller GPU since it's just inference testing
+    gpu="A10G",  # Use a smaller GPU since it's just inference testing
     timeout=3600,
     volumes={ARTIFACT_MOUNT: artifact_volume},
 )
@@ -71,29 +73,29 @@ def run_memory_profile(run_id: str) -> None:
     modes = ["standard", "recurrent_residual", "vega", "block_attnres"]
     depths = [12, 24, 48, 96]
     seq_len = 100
-    
+
     results = {mode: [] for mode in modes}
     base_cfg = load_benchmark_config(BENCHMARK_NAME)
 
     for mode in modes:
         for L in depths:
             log.info(f"Profiling {mode} at {L} layers...")
-            
+
             cfg = config_for_mode(base_cfg, mode)
             cfg.model.num_layers = L
-            
+
             model = TransformerDecoder(cfg.model).cuda().eval()
             x = torch.randint(0, 1000, (1, seq_len)).cuda()
-            
+
             torch.cuda.empty_cache()
             torch.cuda.reset_peak_memory_stats()
-            
+
             with torch.no_grad():
                 _ = model(x)
-                
-            peak_memory = torch.cuda.max_memory_allocated() / (1024 ** 2)  # MB
+
+            peak_memory = torch.cuda.max_memory_allocated() / (1024**2)  # MB
             results[mode].append({"layers": L, "peak_vram_mb": peak_memory})
-            
+
             del model
             del x
             torch.cuda.empty_cache()
@@ -102,12 +104,13 @@ def run_memory_profile(run_id: str) -> None:
     out_dir = Path(ARTIFACT_MOUNT) / "inference_memory" / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / "profile_results.json"
-    
+
     with open(out_file, "w") as f:
         json.dump(results, f, indent=2)
-        
+
     log.info(f"Profiling complete. Results saved to {out_file}")
     artifact_volume.commit()
+
 
 @app.local_entrypoint()
 def main(wait: bool = False) -> None:

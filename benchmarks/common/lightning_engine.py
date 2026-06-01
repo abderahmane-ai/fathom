@@ -132,7 +132,10 @@ class BenchmarkModule(lightning.LightningModule):
         if bad_params:
             print(f"[DIAG step={step}] BAD parameters: {bad_params}")
         else:
-            print(f"[DIAG step={step}] All parameters look clean — NaN may originate in activations/ops.")
+            print(
+                f"[DIAG step={step}] All parameters look clean — "
+                "NaN may originate in activations/ops."
+            )
         print(f"[DIAG step={step}] *** end of parameter dump ***\n")
 
     def training_step(
@@ -262,7 +265,10 @@ class BenchmarkModule(lightning.LightningModule):
         self.log("grad/global_norm", total_norm, on_step=True, prog_bar=False)
         # Diagnostic: warn in stdout if any gradient is already NaN/Inf before clipping.
         if torch.isnan(total_norm) or torch.isinf(total_norm):
-            print(f"\n[DIAG step={self.global_step}] *** NaN/Inf GRADIENT NORM ({total_norm.item()}) ***")
+            print(
+                f"\n[DIAG step={self.global_step}] *** NaN/Inf GRADIENT NORM "
+                f"({total_norm.item()}) ***"
+            )
             for name, param in self.named_parameters():
                 if param.grad is None:
                     continue
@@ -280,7 +286,8 @@ class BenchmarkModule(lightning.LightningModule):
         batch: torch.Tensor | tuple[torch.Tensor, torch.Tensor],
         prefix: str,
     ) -> None:
-        """Log token accuracy on masked (needle) positions when the batch is a (tokens, targets) tuple.
+        """Log token accuracy on masked (needle) positions when the batch is a
+        (tokens, targets) tuple.
 
         Only logs when targets contain ``-100`` entries (the DeepNeedle ignore index),
         indicating a synthetic depth-needle task.  Standard LM batches are no-ops.
@@ -296,8 +303,9 @@ class BenchmarkModule(lightning.LightningModule):
         correct = (preds[mask] == targets[mask]).float().sum()
         total = mask.float().sum()
         if total > 0:
-            self.log(f"{prefix}/needle_acc", correct / total, on_step=True, on_epoch=True,
-                     prog_bar=True)
+            self.log(
+                f"{prefix}/needle_acc", correct / total, on_step=True, on_epoch=True, prog_bar=True
+            )
 
     def _log_rr_gates(self) -> None:
         """Log RR diagnostics when the model exposes them.

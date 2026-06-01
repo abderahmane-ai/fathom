@@ -137,15 +137,13 @@ class LanguageModelDataModule(LightningDataModule):
         """Prepares splits for the requested training stage."""
         seq_len = self.cfg.max_seq_len
 
-        if stage in (None, "fit"):
-            if self._train is None:
-                ids = self._tokenise_split(self.cfg.train_split)
-                self._train = PackedTokenDataset(ids, seq_len)
+        if stage in (None, "fit") and self._train is None:
+            ids = self._tokenise_split(self.cfg.train_split)
+            self._train = PackedTokenDataset(ids, seq_len)
 
-        if stage in (None, "fit", "validate"):
-            if self._val is None:
-                ids = self._tokenise_split(self.cfg.val_split)
-                self._val = PackedTokenDataset(ids, seq_len)
+        if stage in (None, "fit", "validate") and self._val is None:
+            ids = self._tokenise_split(self.cfg.val_split)
+            self._val = PackedTokenDataset(ids, seq_len)
 
         if stage in (None, "test") and self._test is None:
             ids = self._tokenise_split(self.cfg.test_split)

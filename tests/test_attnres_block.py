@@ -154,9 +154,7 @@ class TestBlockAttnResLogitScaling:
 
         values = torch.stack([block0, partial], dim=0)
         keys = module._rms_norm(values)
-        logits = torch.einsum(
-            "d, n b s d -> n b s", module.pseudo_query, keys
-        ) / (d_model ** 0.5)
+        logits = torch.einsum("d, n b s d -> n b s", module.pseudo_query, keys) / (d_model**0.5)
         weights = logits.softmax(dim=0)
 
         entropy = -torch.sum(weights * torch.log(weights + 1e-12), dim=0).mean().item()

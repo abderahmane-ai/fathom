@@ -30,7 +30,7 @@ def cell(d_model):
 class TestRRCellInit:
     def test_standard_residual_at_init(self, cell, B, S, d_model):
         """At init (memory_gain=0) the cell should behave close to h_prev + y."""
-        m = cell.get_initial_state(B, S, device=cell.read_proj[0].weight.device)
+        m = cell.get_initial_state(B, S, device=cell.y_gates_down.weight.device)
         h_prev = torch.randn(B, S, d_model)
         y = torch.randn(B, S, d_model)
         h_new, _ = cell(h_prev, y, m, layer_idx=0, sublayer=0)
@@ -50,7 +50,7 @@ class TestRRCellInit:
 class TestRRCellMemoryUpdate:
     def test_memory_update_shape(self, cell, B, S, d_model):
         """Memory output must match input shape."""
-        m_before = cell.get_initial_state(B, S, device=cell.read_proj[0].weight.device)
+        m_before = cell.get_initial_state(B, S, device=cell.y_gates_down.weight.device)
         h_prev = torch.randn(B, S, d_model)
         y = torch.randn(B, S, d_model)
         _, m_after = cell(h_prev, y, m_before, layer_idx=0, sublayer=0)
@@ -77,13 +77,13 @@ class TestRRCellGradients:
         h_new.sum().backward()
         assert h_prev.grad is not None
         assert y.grad is not None
-        assert cell.read_proj[0].weight.grad is not None
+        assert cell.y_gates_down.weight.grad is not None
 
 
 class TestRRCellStability:
     def test_memory_state_bounding(self, cell, B, S, d_model):
         """Under large input values, tanh bounding prevents state explosion."""
-        m = cell.get_initial_state(B, S, device=cell.read_proj[0].weight.device)
+        m = cell.get_initial_state(B, S, device=cell.y_gates_down.weight.device)
         h_prev = torch.randn(B, S, d_model)
         y_large = torch.randn(B, S, d_model) * 100.0
         _, m_after = cell(h_prev, y_large, m, layer_idx=0, sublayer=0)

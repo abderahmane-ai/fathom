@@ -111,7 +111,7 @@ class VEGACell(nn.Module):
         self.y_norm = _ParameterFreeRMSNorm(eps=eps)
 
         # Use vector state for small head ranks; matrix state for larger ranks.
-        self.use_vector_state = (self.r_head <= _VECTOR_STATE_MAX_R_HEAD)
+        self.use_vector_state = self.r_head <= _VECTOR_STATE_MAX_R_HEAD
 
         # Projections into the rank-dimensional EMA space.
         # Fused Q, K, V projection to reduce GPU kernel launch overhead.
@@ -120,7 +120,7 @@ class VEGACell(nn.Module):
         _read_rank = max(32, d_model // 16)
         self.read_rank = _read_rank
         self.fused_write_read_proj = nn.Linear(d_model, rank + _read_rank, bias=True)
-        self.read_proj_up   = nn.Linear(_read_rank, d_model, bias=True)
+        self.read_proj_up = nn.Linear(_read_rank, d_model, bias=True)
 
         # Element-wise damp gate: σ(damp_weight ⊙ y + damp_bias).
         self.damp_weight = nn.Parameter(torch.empty(d_model))
@@ -146,9 +146,9 @@ class VEGACell(nn.Module):
                 slow_decay_range[0], slow_decay_range[1], n_slow_heads * self.r_head
             )
             all_logits = torch.cat([fast_logits, slow_logits])
-            self.decay.copy_(all_logits.view(1, self.n_heads, self.r_head).expand(
-                self.num_sublayers, -1, -1
-            ))
+            self.decay.copy_(
+                all_logits.view(1, self.n_heads, self.r_head).expand(self.num_sublayers, -1, -1)
+            )
 
         # Orthogonal init for the EMA projections — improves conditioning of the state.
         with torch.no_grad():
@@ -168,7 +168,7 @@ class VEGACell(nn.Module):
             # read_proj_down originally had bias=False; zeroing this slice preserves equivalence
             # and prevents future maintainers from accidentally adding a non-zero bias here.
             self.fused_write_read_proj.bias.data[rank:].zero_()
-            
+
             nn.init.normal_(self.read_proj_up.weight, 0.0, gate_init_std)
             self.read_proj_up.bias.data.fill_(read_gate_bias)
 
@@ -196,9 +196,7 @@ class VEGACell(nn.Module):
             ``(S_state, z_state)`` — EMA covariance and normalization state.
         """
         if self.use_vector_state:
-            S0 = torch.zeros(
-                B, S, self.n_heads, self.r_head, device=device, dtype=torch.float32
-            )
+            S0 = torch.zeros(B, S, self.n_heads, self.r_head, device=device, dtype=torch.float32)
         else:
             S0 = torch.zeros(
                 B, S, self.n_heads, self.r_head, self.r_head, device=device, dtype=torch.float32
@@ -240,7 +238,9 @@ class VEGACell(nn.Module):
         Q = Q.view(B, Seq, self.n_heads, self.r_head)
         # Fused write gate and read down projection
         fused_gate_down = self.fused_write_read_proj(y_norm)
-        write_gate_proj, read_proj_down_proj = fused_gate_down.split([self.rank, self.read_rank], dim=-1)
+        write_gate_proj, read_proj_down_proj = fused_gate_down.split(
+            [self.rank, self.read_rank], dim=-1
+        )
         g = torch.sigmoid(write_gate_proj).view(B, Seq, self.n_heads, self.r_head).float()
 
         # Per-sublayer query depth bias only. Key depth bias is omitted; query bias alone is
@@ -252,11 +252,11 @@ class VEGACell(nn.Module):
         # Compute norms in float32 to prevent underflow in bfloat16.
         K_dep_f32 = K_dep.float()
         K_scale = torch.rsqrt(K_dep_f32.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-        K_dep = (K_dep_f32 * K_scale / (self.r_head ** 0.5)).to(K_dep.dtype)
+        K_dep = (K_dep_f32 * K_scale / (self.r_head**0.5)).to(K_dep.dtype)
 
         Q_dep_f32 = Q_dep.float()
         Q_scale = torch.rsqrt(Q_dep_f32.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-        Q_dep = (Q_dep_f32 * Q_scale / (self.r_head ** 0.5)).to(Q_dep.dtype)
+        Q_dep = (Q_dep_f32 * Q_scale / (self.r_head**0.5)).to(Q_dep.dtype)
 
         # Positive feature map φ(x) = ELU(x) + 1 (ensures state positivity).
         K_phi = (F.elu(K_dep) + 1.0).float()
@@ -305,7 +305,7 @@ class VEGACell(nn.Module):
                 for s_start in range(0, Seq, _MATRIX_STATE_CHUNK_S):
                     s_end = min(s_start + _MATRIX_STATE_CHUNK_S, Seq)
                     K_chunk = K_phi[:, s_start:s_end]
-                    V_chunk = (g[:, s_start:s_end] * V[:, s_start:s_end].float())
+                    V_chunk = g[:, s_start:s_end] * V[:, s_start:s_end].float()
                     outer_chunk = K_chunk.unsqueeze(-1) * V_chunk.unsqueeze(-2)
                     S_new[:, s_start:s_end] += outer_chunk
         z_new = decay * z_prev + K_phi

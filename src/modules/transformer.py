@@ -52,7 +52,7 @@ class TransformerDecoder(nn.Module):
         self.emb_drop = nn.Dropout(getattr(config, "dropout", 0.1))
 
         # Shared depth-memory cells — one instance, passed to every layer.
-        self.rr_cell:   RecurrentResidualCell | None = None
+        self.rr_cell: RecurrentResidualCell | None = None
         self.vega_cell: VEGACell | None = None
 
         if self.residual_mode == "recurrent_residual":
@@ -101,7 +101,7 @@ class TransformerDecoder(nn.Module):
             ]
         )
 
-        self.ln_f    = RMSNorm(config.d_model)
+        self.ln_f = RMSNorm(config.d_model)
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
         # Weight tying: embedding and LM-head share the same matrix.

@@ -238,10 +238,12 @@ class DPSEvaluator:
             mean_y_gps = self.sum_y_gps / self.n_tokens
             correction_gps = self.n_tokens * torch.sum(mean_y_gps**2)
             target_variance_gps = self.yty_gps - correction_gps
-            res.update({
-                "xty_gps": self.xty_gps,
-                "yty_gps": self.yty_gps,
-                "target_variance_gps": target_variance_gps,
-            })
+            res.update(
+                {
+                    "xty_gps": self.xty_gps,
+                    "yty_gps": self.yty_gps,
+                    "target_variance_gps": target_variance_gps,
+                }
+            )
 
         return res

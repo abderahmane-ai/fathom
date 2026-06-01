@@ -1,8 +1,9 @@
 """Recurrent Residual Cell — gated depth-wise working memory.
 
 Each sublayer call reads from and writes to a persistent memory tensor ``m``
-that flows across all layers.  The memory is shared (weight-tied) across every
-layer, so the total parameter overhead is O(d) regardless of depth.
+that flows across all layers.  The cell weights are shared (weight-tied) across every
+layer to keep weight parameter overhead at O(d) regardless of depth, while
+per-sublayer depth biases scale as O(L * d).
 
 Math (per sublayer):
     y_norm = RMSNorm(y)
@@ -19,59 +20,8 @@ Math (per sublayer):
 
 from __future__ import annotations
 
-from typing import Any
 import torch
 import torch.nn as nn
-
-class MockProjGate:
-    """Mock projection gate class for backward compatibility with unit tests."""
-    def __init__(self, cell: RecurrentResidualCell, gate_idx: int, rank: int, d_model: int) -> None:
-        self.cell = cell
-        self.gate_idx = gate_idx
-        self.rank = rank
-        self.d_model = d_model
-
-    def __getitem__(self, idx: int) -> Any:
-        if idx == 0:
-            class MockDown:
-                def __init__(self, cell: RecurrentResidualCell, gate_idx: int, rank: int) -> None:
-                    self.cell = cell
-                    self.gate_idx = gate_idx
-                    self.rank = rank
-                @property
-                def weight(self) -> torch.Tensor:
-                    w = self.cell.y_gates_down.weight[self.gate_idx*self.rank : (self.gate_idx+1)*self.rank]
-                    if self.cell.y_gates_down.weight.grad is not None:
-                        w.grad = self.cell.y_gates_down.weight.grad[self.gate_idx*self.rank : (self.gate_idx+1)*self.rank]
-                    return w
-            return MockDown(self.cell, self.gate_idx, self.rank)
-        elif idx == 1:
-            class MockUp:
-                def __init__(self, cell: RecurrentResidualCell, gate_idx: int, rank: int, d_model: int) -> None:
-                    self.cell = cell
-                    self.gate_idx = gate_idx
-                    self.rank = rank
-                    self.d_model = d_model
-                @property
-                def weight(self) -> torch.Tensor:
-                    w = self.cell.y_gates_up.weight[
-                        self.gate_idx*self.d_model : (self.gate_idx+1)*self.d_model,
-                        self.gate_idx*self.rank : (self.gate_idx+1)*self.rank
-                    ]
-                    if self.cell.y_gates_up.weight.grad is not None:
-                        w.grad = self.cell.y_gates_up.weight.grad[
-                            self.gate_idx*self.d_model : (self.gate_idx+1)*self.d_model,
-                            self.gate_idx*self.rank : (self.gate_idx+1)*self.rank
-                        ]
-                    return w
-                @property
-                def bias(self) -> torch.Tensor:
-                    b = self.cell.y_gates_up.bias[self.gate_idx*self.d_model : (self.gate_idx+1)*self.d_model]
-                    if self.cell.y_gates_up.bias.grad is not None:
-                        b.grad = self.cell.y_gates_up.bias.grad[self.gate_idx*self.d_model : (self.gate_idx+1)*self.d_model]
-                    return b
-            return MockUp(self.cell, self.gate_idx, self.rank, self.d_model)
-        raise IndexError("Mock gate only supports index 0 and 1.")
 
 
 class _MemoryNorm(nn.Module):
@@ -147,17 +97,17 @@ class RecurrentResidualCell(nn.Module):
         self.memory_gain = nn.Parameter(torch.full((d_model,), memory_gain_init))
 
         # Per-sublayer depth biases let each position specialize independently.
-        self.depth_read_bias   = nn.Parameter(torch.zeros(self.num_sublayers, d_model))
+        self.depth_read_bias = nn.Parameter(torch.zeros(self.num_sublayers, d_model))
         self.depth_forget_bias = nn.Parameter(torch.zeros(self.num_sublayers, d_model))
         self.depth_update_bias = nn.Parameter(torch.zeros(self.num_sublayers, d_model))
-        self.depth_damp_bias   = nn.Parameter(torch.zeros(self.num_sublayers, d_model))
+        self.depth_damp_bias = nn.Parameter(torch.zeros(self.num_sublayers, d_model))
 
         # Learnable initial memory state (starts at zero).
         self.m_init = nn.Parameter(torch.zeros(d_model))
 
         self.memory_norm = _MemoryNorm(d_model, eps=eps)
-        self.memory_out  = nn.Linear(d_model, d_model, bias=False)
-        self.y_norm      = _MemoryNorm(d_model, eps=eps)
+        self.memory_out = nn.Linear(d_model, d_model, bias=False)
+        self.y_norm = _MemoryNorm(d_model, eps=eps)
 
         # Low-rank weight init: tiny random weights so biases dominate at start.
         nn.init.normal_(self.forget_proj[0].weight, std=gate_init_std)
@@ -168,47 +118,37 @@ class RecurrentResidualCell(nn.Module):
             # Down weights: shape (3 * rank, d_model)
             # Initialize each block of shape (rank, d_model) independently
             for i in range(3):
-                nn.init.normal_(self.y_gates_down.weight[i*rank:(i+1)*rank], std=gate_init_std)
+                nn.init.normal_(
+                    self.y_gates_down.weight[i * rank : (i + 1) * rank], std=gate_init_std
+                )
 
             # Up weights: shape (3 * d_model, 3 * rank)
             # Set to zero, then initialize diagonal blocks of shape (d_model, rank) independently
             self.y_gates_up.weight.zero_()
             for i in range(3):
                 nn.init.normal_(
-                    self.y_gates_up.weight[i*d_model:(i+1)*d_model, i*rank:(i+1)*rank],
-                    std=gate_init_std
+                    self.y_gates_up.weight[
+                        i * d_model : (i + 1) * d_model, i * rank : (i + 1) * rank
+                    ],
+                    std=gate_init_std,
                 )
 
             # Biases: shape (3 * d_model)
-            self.y_gates_up.bias[0*d_model:1*d_model].fill_(read_gate_bias)
-            self.y_gates_up.bias[1*d_model:2*d_model].fill_(damp_gate_bias)
-            self.y_gates_up.bias[2*d_model:3*d_model].fill_(update_gate_bias)
+            self.y_gates_up.bias[0 * d_model : 1 * d_model].fill_(read_gate_bias)
+            self.y_gates_up.bias[1 * d_model : 2 * d_model].fill_(damp_gate_bias)
+            self.y_gates_up.bias[2 * d_model : 3 * d_model].fill_(update_gate_bias)
 
             self.forget_proj[1].bias.fill_(forget_gate_bias)
 
-    @property
-    def read_proj(self) -> MockProjGate:
-        return MockProjGate(self, 0, max(32, self.d_model // 8), self.d_model)
-
-    @property
-    def damp_proj(self) -> MockProjGate:
-        return MockProjGate(self, 1, max(32, self.d_model // 8), self.d_model)
-
-    @property
-    def update_proj(self) -> MockProjGate:
-        return MockProjGate(self, 2, max(32, self.d_model // 8), self.d_model)
+        self.register_buffer("last_read_gate", torch.tensor(0.0), persistent=False)
+        self.register_buffer("last_update_gate", torch.tensor(0.0), persistent=False)
 
     def get_initial_state(
         self, batch_size: int, seq_len: int, device: torch.device | None = None
     ) -> torch.Tensor:
         """Return m_0 broadcast to (batch_size, seq_len, d_model)."""
         target_device = device if device is not None else self.m_init.device
-        return (
-            self.m_init.to(target_device)
-            .view(1, 1, -1)
-            .expand(batch_size, seq_len, -1)
-            .clone()
-        )
+        return self.m_init.to(target_device).view(1, 1, -1).expand(batch_size, seq_len, -1).clone()
 
     def _sublayer_position(self, layer_idx: int, sublayer: int) -> int:
         """Map (layer_idx, sublayer) to a flat depth-bias index.
@@ -228,9 +168,7 @@ class RecurrentResidualCell(nn.Module):
             raise ValueError(f"sublayer must be 0 or 1, got {sublayer}.")
         position = layer_idx * 2 + sublayer
         if position >= self.num_sublayers:
-            raise IndexError(
-                f"sublayer position {position} exceeds {self.num_sublayers} entries."
-            )
+            raise IndexError(f"sublayer position {position} exceeds {self.num_sublayers} entries.")
         return position
 
     def forward(
@@ -262,13 +200,16 @@ class RecurrentResidualCell(nn.Module):
         fused_y = self.y_gates_up(self.y_gates_down(y_norm))
         read_gate_proj, damp_gate_proj, update_gate_proj = fused_y.chunk(3, dim=-1)
 
-        read_gate   = torch.sigmoid(read_gate_proj   + self.depth_read_bias[position])
-        damp_gate   = torch.sigmoid(damp_gate_proj   + self.depth_damp_bias[position])
+        read_gate = torch.sigmoid(read_gate_proj + self.depth_read_bias[position])
+        damp_gate = torch.sigmoid(damp_gate_proj + self.depth_damp_bias[position])
         forget_gate = torch.sigmoid(self.forget_proj(m_norm) + self.depth_forget_bias[position])
         update_gate = torch.sigmoid(update_gate_proj + self.depth_update_bias[position])
 
         memory_read = self.memory_gain * self.memory_out(m_norm)
         h_new = damp_gate * h_prev + y + read_gate * memory_read
         m_new = forget_gate.float() * m + update_gate.float() * torch.tanh(y).float()
+
+        self.last_read_gate.copy_(read_gate.mean().detach())
+        self.last_update_gate.copy_(update_gate.mean().detach())
 
         return h_new, m_new

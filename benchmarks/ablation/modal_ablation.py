@@ -7,7 +7,6 @@ import os
 import sys
 
 import modal
-import torch
 
 from benchmarks.common.artifacts import repo_root
 from benchmarks.common.configs import config_for_mode, load_benchmark_config, make_run_id
@@ -43,6 +42,7 @@ image = (
 artifact_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 app = modal.App("rr-ablation")
 
+
 def _prepare_remote() -> None:
     os.chdir(REMOTE_ROOT)
     sys.path.insert(0, REMOTE_ROOT)
@@ -53,27 +53,24 @@ def _prepare_remote() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 
-@app.function(
-    image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume}
-)
+@app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume})
 def run_vega_no_var_reg(run_id: str) -> None:
     """VEGA without Variance Regularization on decay."""
     _prepare_remote()
-    
+
     # Monkey-patch variance regularization to 0
     import benchmarks.common.lightning_engine as engine
+
     engine._VEGA_DECAY_VAR_REG_WEIGHT = 0.0
-    
+
     cfg = load_benchmark_config(BENCHMARK_NAME)
     cfg = config_for_mode(cfg, "vega")
-    
+
     engine.run_benchmark(cfg, BENCHMARK_NAME, "vega_no_var_reg", run_id)
     artifact_volume.commit()
 
 
-@app.function(
-    image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume}
-)
+@app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume})
 def run_vega_no_multiscale(run_id: str) -> None:
     """VEGA initialized uniformly (no multi-scale log-linear init)."""
     _prepare_remote()
@@ -81,31 +78,35 @@ def run_vega_no_multiscale(run_id: str) -> None:
 
     cfg = load_benchmark_config(BENCHMARK_NAME)
     cfg = config_for_mode(cfg, "vega")
-    
+
     # Override decay ranges so all heads start identically
     cfg.model.vega.fast_decay_range = [2.0, 2.0]
     cfg.model.vega.slow_decay_range = [2.0, 2.0]
-    
+
     run_benchmark(cfg, BENCHMARK_NAME, "vega_no_multiscale", run_id)
     artifact_volume.commit()
 
 
-@app.function(
-    image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume}
-)
+@app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume})
 def run_rr_no_depth_biases(run_id: str) -> None:
     """RR without layer-specific depth biases."""
     _prepare_remote()
     import lightning as L
-    from benchmarks.common.lightning_engine import run_benchmark, LanguageModelLightningModule
-    
+
+    from benchmarks.common.lightning_engine import BenchmarkModule, run_benchmark
+
     # Create a callback to zero out the biases before training
     class ZeroDepthBiasesCallback(L.Callback):
-        def on_fit_start(self, trainer: L.Trainer, pl_module: LanguageModelLightningModule) -> None:
+        def on_fit_start(self, trainer: L.Trainer, pl_module: BenchmarkModule) -> None:
             # We locate the recurrent residual cell inside the model
             model = pl_module.model
             if hasattr(model, "rr_cell") and model.rr_cell is not None:
-                for attr in ["depth_read_bias", "depth_forget_bias", "depth_update_bias", "depth_damp_bias"]:
+                for attr in [
+                    "depth_read_bias",
+                    "depth_forget_bias",
+                    "depth_update_bias",
+                    "depth_damp_bias",
+                ]:
                     if hasattr(model.rr_cell, attr):
                         param = getattr(model.rr_cell, attr)
                         param.data.zero_()
@@ -114,25 +115,30 @@ def run_rr_no_depth_biases(run_id: str) -> None:
 
     cfg = load_benchmark_config(BENCHMARK_NAME)
     cfg = config_for_mode(cfg, "recurrent_residual")
-    
+
     # To use the custom callback, we would normally pass it to Trainer.
     # Since run_benchmark handles Trainer instantiation, we'll monkey-patch pl_module
     # on_fit_start directly as a hack to preserve zero-intrusion to src.
-    
-    original_on_fit_start = LanguageModelLightningModule.on_fit_start
-    
-    def modified_on_fit_start(self):
+
+    original_on_fit_start = BenchmarkModule.on_fit_start
+
+    def modified_on_fit_start(self: BenchmarkModule) -> None:
         original_on_fit_start(self)
         model = self.model
         if hasattr(model, "rr_cell") and model.rr_cell is not None:
-            for attr in ["depth_read_bias", "depth_forget_bias", "depth_update_bias", "depth_damp_bias"]:
+            for attr in [
+                "depth_read_bias",
+                "depth_forget_bias",
+                "depth_update_bias",
+                "depth_damp_bias",
+            ]:
                 if hasattr(model.rr_cell, attr):
                     param = getattr(model.rr_cell, attr)
                     param.data.zero_()
                     param.requires_grad = False
             log.info("Monkey-patched RR depth biases to zero.")
-            
-    LanguageModelLightningModule.on_fit_start = modified_on_fit_start
+
+    BenchmarkModule.on_fit_start = modified_on_fit_start
 
     run_benchmark(cfg, BENCHMARK_NAME, "rr_no_depth_biases", run_id)
     artifact_volume.commit()
