@@ -62,7 +62,7 @@ def _prepare_remote() -> None:
     timeout=3600,
     volumes={ARTIFACT_MOUNT: artifact_volume},
 )
-def run_memory_profile(run_id: str) -> None:
+def run_memory_profile(run_id: str, compile: bool = False) -> None:
     """Profile peak activation memory and forward-pass latency across modes and depths."""
     _prepare_remote()
     from src.modules.transformer import TransformerDecoder
@@ -86,6 +86,8 @@ def run_memory_profile(run_id: str) -> None:
             cfg.model.num_layers = L
 
             model = TransformerDecoder(cfg.model)
+            if compile:
+                model = torch.compile(model)
             torch.cuda.empty_cache()
             torch.cuda.reset_peak_memory_stats()
 
@@ -124,10 +126,10 @@ def run_memory_profile(run_id: str) -> None:
 
 
 @app.local_entrypoint()
-def main(wait: bool = False) -> None:
+def main(wait: bool = False, compile: bool = False) -> None:
     run_id = make_run_id(BENCHMARK_NAME)
     handles = {
-        "profile": run_memory_profile.spawn(run_id),
+        "profile": run_memory_profile.spawn(run_id, compile=compile),
     }
     manifest = write_spawn_manifest(BENCHMARK_NAME, handles, run_id)
     print(f"Spawned {BENCHMARK_NAME} jobs with run_id={run_id}")

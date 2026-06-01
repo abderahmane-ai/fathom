@@ -96,7 +96,7 @@ def generate(model: torch.nn.Module, input_ids: torch.Tensor, max_new_tokens: in
     return generated
 
 
-def _run_niah_eval(mode: str, lm_run_id: str) -> None:
+def _run_niah_eval(mode: str, lm_run_id: str, compile: bool = False) -> None:
     _prepare_remote()
     from transformers import AutoTokenizer
 
@@ -126,6 +126,8 @@ def _run_niah_eval(mode: str, lm_run_id: str) -> None:
     }
     model.load_state_dict(state_dict, strict=False)
     model = model.cuda().eval()
+    if compile:
+        model = torch.compile(model)
 
     # Prepare Context
     # Inject passkey at 20% mark
@@ -165,47 +167,56 @@ def _run_niah_eval(mode: str, lm_run_id: str) -> None:
 
 
 @app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume})
-def run_standard_niah(lm_run_id: str) -> None:
-    _run_niah_eval("standard", lm_run_id)
+def run_standard_niah(lm_run_id: str, compile: bool = False) -> None:
+    _run_niah_eval("standard", lm_run_id, compile=compile)
 
 
 @app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume})
-def run_recurrent_residual_niah(lm_run_id: str) -> None:
-    _run_niah_eval("recurrent_residual", lm_run_id)
+def run_recurrent_residual_niah(lm_run_id: str, compile: bool = False) -> None:
+    _run_niah_eval("recurrent_residual", lm_run_id, compile=compile)
 
 
 @app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume})
-def run_vega_niah(lm_run_id: str) -> None:
-    _run_niah_eval("vega", lm_run_id)
+def run_vega_niah(lm_run_id: str, compile: bool = False) -> None:
+    _run_niah_eval("vega", lm_run_id, compile=compile)
 
 
 @app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume})
-def run_block_attnres_niah(lm_run_id: str) -> None:
-    _run_niah_eval("block_attnres", lm_run_id)
+def run_block_attnres_niah(lm_run_id: str, compile: bool = False) -> None:
+    _run_niah_eval("block_attnres", lm_run_id, compile=compile)
 
 
 @app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume})
-def run_hyper_connection_niah(lm_run_id: str) -> None:
+def run_hyper_connection_niah(lm_run_id: str, compile: bool = False) -> None:
     """Run the mHC-Lite hyper-connection NIAH evaluation.
 
     Args:
         lm_run_id: The LM quality run id to evaluate.
+        compile: Whether to compile the model.
 
     Returns:
         None.
     """
-    _run_niah_eval("hyper_connection", lm_run_id)
+    _run_niah_eval("hyper_connection", lm_run_id, compile=compile)
 
 
 @app.local_entrypoint()
-def main(lm_run_id: str) -> None:
-    """Evaluate Natural Text NIAH on existing LM Quality checkpoints."""
+def main(lm_run_id: str, compile: bool = False) -> None:
+    """Evaluate Natural Text NIAH on existing LM Quality checkpoints.
+
+    Args:
+        lm_run_id: The LM quality run id to evaluate.
+        compile: Whether to compile the models using torch.compile.
+
+    Returns:
+        None.
+    """
     handles = {
-        "standard": run_standard_niah.spawn(lm_run_id),
-        "recurrent_residual": run_recurrent_residual_niah.spawn(lm_run_id),
-        "vega": run_vega_niah.spawn(lm_run_id),
-        "block_attnres": run_block_attnres_niah.spawn(lm_run_id),
-        "hyper_connection": run_hyper_connection_niah.spawn(lm_run_id),
+        "standard": run_standard_niah.spawn(lm_run_id, compile=compile),
+        "recurrent_residual": run_recurrent_residual_niah.spawn(lm_run_id, compile=compile),
+        "vega": run_vega_niah.spawn(lm_run_id, compile=compile),
+        "block_attnres": run_block_attnres_niah.spawn(lm_run_id, compile=compile),
+        "hyper_connection": run_hyper_connection_niah.spawn(lm_run_id, compile=compile),
     }
     manifest = write_spawn_manifest(BENCHMARK_NAME, handles, lm_run_id)
     print(f"Spawned {BENCHMARK_NAME} eval jobs with lm_run_id={lm_run_id}")

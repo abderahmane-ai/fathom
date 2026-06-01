@@ -22,7 +22,7 @@ Contains shared infrastructure used across all benchmarks:
 
 ### 3. Depth Preservation Score (DPS) Benchmark (`benchmarks/depth_preservation/`)
 **Purpose:** Measures the preservation of activation identity and alignment across layers for untrained models.
-- **Run Command:** `modal run --detach benchmarks/depth_preservation/modal_dps.py`
+- **Run Command:** `modal run --detach benchmarks/depth_preservation/modal_depth_preservation.py`
 
 ### 4. LM Quality Benchmark (`benchmarks/lm_quality/`)
 **Purpose:** Measures real causal language-model quality and throughput on TinyStories (or Wikitext).

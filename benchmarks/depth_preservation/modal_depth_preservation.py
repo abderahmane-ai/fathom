@@ -161,10 +161,17 @@ def _run_dps_evaluation(cfg: DictConfig, residual_mode: str, run_id: str) -> Non
         json.dump(results, f, indent=2)
 
 
-def _run_mode(residual_mode: str, run_id: str) -> None:
-    """Setup and run a single mode remotely."""
+def _run_mode(residual_mode: str, run_id: str, compile: bool = False) -> None:
+    """Setup and run a single mode remotely.
+
+    Args:
+        residual_mode: Residual mode to benchmark.
+        run_id: Shared run id.
+        compile: Whether to compile the model.
+    """
     _prepare_remote()
     cfg = config_for_mode(load_benchmark_config(BENCHMARK_NAME), residual_mode)
+    cfg.compile = compile
     _run_dps_evaluation(cfg, residual_mode, run_id)
     artifact_volume.commit()
 
@@ -175,13 +182,14 @@ def _run_mode(residual_mode: str, run_id: str) -> None:
     timeout=60 * 60 * 2,
     volumes={ARTIFACT_MOUNT: artifact_volume},
 )
-def run_standard(run_id: str) -> None:
+def run_standard(run_id: str, compile: bool = False) -> None:
     """Run the standard residual depth preservation benchmark.
 
     Args:
         run_id: Shared run id.
+        compile: Whether to compile the model.
     """
-    _run_mode("standard", run_id)
+    _run_mode("standard", run_id, compile=compile)
 
 
 @app.function(
@@ -190,13 +198,14 @@ def run_standard(run_id: str) -> None:
     timeout=60 * 60 * 2,
     volumes={ARTIFACT_MOUNT: artifact_volume},
 )
-def run_recurrent_residual(run_id: str) -> None:
+def run_recurrent_residual(run_id: str, compile: bool = False) -> None:
     """Run the Recurrent Residual depth preservation benchmark.
 
     Args:
         run_id: Shared run id.
+        compile: Whether to compile the model.
     """
-    _run_mode("recurrent_residual", run_id)
+    _run_mode("recurrent_residual", run_id, compile=compile)
 
 
 @app.function(
@@ -205,16 +214,17 @@ def run_recurrent_residual(run_id: str) -> None:
     timeout=60 * 60 * 2,
     volumes={ARTIFACT_MOUNT: artifact_volume},
 )
-def run_vega(run_id: str) -> None:
+def run_vega(run_id: str, compile: bool = False) -> None:
     """Run the VEGA depth preservation benchmark.
 
     Args:
         run_id: Shared run id.
+        compile: Whether to compile the model.
 
     Returns:
         None.
     """
-    _run_mode("vega", run_id)
+    _run_mode("vega", run_id, compile=compile)
 
 
 @app.function(
@@ -223,8 +233,8 @@ def run_vega(run_id: str) -> None:
     timeout=60 * 60 * 2,
     volumes={ARTIFACT_MOUNT: artifact_volume},
 )
-def run_block_attnres(run_id: str) -> None:
-    _run_mode("block_attnres", run_id)
+def run_block_attnres(run_id: str, compile: bool = False) -> None:
+    _run_mode("block_attnres", run_id, compile=compile)
 
 
 @app.function(
@@ -233,28 +243,37 @@ def run_block_attnres(run_id: str) -> None:
     timeout=60 * 60 * 2,
     volumes={ARTIFACT_MOUNT: artifact_volume},
 )
-def run_hyper_connection(run_id: str) -> None:
+def run_hyper_connection(run_id: str, compile: bool = False) -> None:
     """Run the mHC-Lite hyper-connection depth preservation benchmark.
 
     Args:
         run_id: Shared run id.
+        compile: Whether to compile the model.
 
     Returns:
         None.
     """
-    _run_mode("hyper_connection", run_id)
+    _run_mode("hyper_connection", run_id, compile=compile)
 
 
 @app.local_entrypoint()
-def main(wait: bool = False) -> None:
-    """Spawn all DPS benchmark modes."""
+def main(wait: bool = False, compile: bool = False) -> None:
+    """Spawn all DPS benchmark modes.
+
+    Args:
+        wait: Whether to wait for remote jobs.
+        compile: Whether to compile the models using torch.compile.
+
+    Returns:
+        None.
+    """
     run_id = make_run_id(BENCHMARK_NAME)
     handles = {
-        "standard": run_standard.spawn(run_id),
-        "recurrent_residual": run_recurrent_residual.spawn(run_id),
-        "vega": run_vega.spawn(run_id),
-        "block_attnres": run_block_attnres.spawn(run_id),
-        "hyper_connection": run_hyper_connection.spawn(run_id),
+        "standard": run_standard.spawn(run_id, compile=compile),
+        "recurrent_residual": run_recurrent_residual.spawn(run_id, compile=compile),
+        "vega": run_vega.spawn(run_id, compile=compile),
+        "block_attnres": run_block_attnres.spawn(run_id, compile=compile),
+        "hyper_connection": run_hyper_connection.spawn(run_id, compile=compile),
     }
     manifest = write_spawn_manifest(BENCHMARK_NAME, handles, run_id)
     print(f"Spawned {BENCHMARK_NAME} jobs with run_id={run_id}")

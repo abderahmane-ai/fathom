@@ -60,13 +60,14 @@ def _prepare_remote() -> None:
     retries=modal.Retries(max_retries=2, backoff_coefficient=2.0, initial_delay=30.0),
     volumes={ARTIFACT_MOUNT: artifact_volume},
 )
-def run_wide_shallow(run_id: str) -> None:
+def run_wide_shallow(run_id: str, compile: bool = False) -> None:
     """Run Wide & Shallow Standard (6 Layers, d_model=1024)."""
     _prepare_remote()
     from benchmarks.common.lightning_engine import run_benchmark
 
     cfg = load_benchmark_config("scaling_efficiency")  # Base it on scaling efficiency config
     cfg = config_for_mode(cfg, "standard")
+    cfg.compile = compile
 
     # Override for Wide & Shallow
     cfg.model.num_layers = 6
@@ -84,13 +85,14 @@ def run_wide_shallow(run_id: str) -> None:
     retries=modal.Retries(max_retries=2, backoff_coefficient=2.0, initial_delay=30.0),
     volumes={ARTIFACT_MOUNT: artifact_volume},
 )
-def run_narrow_deep(run_id: str, mode: str = "vega") -> None:
+def run_narrow_deep(run_id: str, mode: str = "vega", compile: bool = False) -> None:
     """Run Narrow & Deep VEGA/RR (24 Layers, d_model=512)."""
     _prepare_remote()
     from benchmarks.common.lightning_engine import run_benchmark
 
     cfg = load_benchmark_config(BENCHMARK_NAME)
     cfg = config_for_mode(cfg, mode)
+    cfg.compile = compile
 
     # Override for Narrow & Deep
     cfg.model.num_layers = 24
@@ -102,13 +104,13 @@ def run_narrow_deep(run_id: str, mode: str = "vega") -> None:
 
 
 @app.local_entrypoint()
-def main(wait: bool = False) -> None:
+def main(wait: bool = False, compile: bool = False) -> None:
     run_id = make_run_id(BENCHMARK_NAME)
     handles = {
-        "wide_shallow_std": run_wide_shallow.spawn(run_id),
-        "narrow_deep_vega": run_narrow_deep.spawn(run_id, mode="vega"),
-        "narrow_deep_rr": run_narrow_deep.spawn(run_id, mode="recurrent_residual"),
-        "narrow_deep_hc": run_narrow_deep.spawn(run_id, mode="hyper_connection"),
+        "wide_shallow_std": run_wide_shallow.spawn(run_id, compile=compile),
+        "narrow_deep_vega": run_narrow_deep.spawn(run_id, mode="vega", compile=compile),
+        "narrow_deep_rr": run_narrow_deep.spawn(run_id, mode="recurrent_residual", compile=compile),
+        "narrow_deep_hc": run_narrow_deep.spawn(run_id, mode="hyper_connection", compile=compile),
     }
     manifest = write_spawn_manifest(BENCHMARK_NAME, handles, run_id)
     print(f"Spawned {BENCHMARK_NAME} jobs with run_id={run_id}")

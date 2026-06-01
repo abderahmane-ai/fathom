@@ -14,7 +14,7 @@ The run logs Depth Preservation Score (DPS) per layer, Gradient Preservation Sco
 
 ## Run
 ```bash
-modal run --detach benchmarks/depth_preservation/modal_dps.py
+modal run --detach benchmarks/depth_preservation/modal_depth_preservation.py
 ```
 
 Use `--wait true` to block until remote jobs finish.

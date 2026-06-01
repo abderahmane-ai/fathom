@@ -68,7 +68,7 @@ Four evaluation tasks are available via Modal. Each task runs all four modes in 
 ```bash
 # Run a benchmark (requires modal auth)
 modal run benchmarks/lm_quality/modal_lm_quality.py
-modal run benchmarks/depth_preservation/modal_dps.py
+modal run benchmarks/depth_preservation/modal_depth_preservation.py
 modal run benchmarks/depth_needle/modal_depth_needle.py
 ```
 

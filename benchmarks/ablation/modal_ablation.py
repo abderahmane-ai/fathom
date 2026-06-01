@@ -54,7 +54,7 @@ def _prepare_remote() -> None:
 
 
 @app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume})
-def run_vega_no_var_reg(run_id: str) -> None:
+def run_vega_no_var_reg(run_id: str, compile: bool = False) -> None:
     """VEGA without Variance Regularization on decay."""
     _prepare_remote()
 
@@ -65,19 +65,21 @@ def run_vega_no_var_reg(run_id: str) -> None:
 
     cfg = load_benchmark_config(BENCHMARK_NAME)
     cfg = config_for_mode(cfg, "vega")
+    cfg.compile = compile
 
     engine.run_benchmark(cfg, BENCHMARK_NAME, "vega_no_var_reg", run_id)
     artifact_volume.commit()
 
 
 @app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume})
-def run_vega_no_multiscale(run_id: str) -> None:
+def run_vega_no_multiscale(run_id: str, compile: bool = False) -> None:
     """VEGA initialized uniformly (no multi-scale log-linear init)."""
     _prepare_remote()
     from benchmarks.common.lightning_engine import run_benchmark
 
     cfg = load_benchmark_config(BENCHMARK_NAME)
     cfg = config_for_mode(cfg, "vega")
+    cfg.compile = compile
 
     # Override decay ranges so all heads start identically
     cfg.model.vega.fast_decay_range = [2.0, 2.0]
@@ -88,7 +90,7 @@ def run_vega_no_multiscale(run_id: str) -> None:
 
 
 @app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume})
-def run_rr_no_depth_biases(run_id: str) -> None:
+def run_rr_no_depth_biases(run_id: str, compile: bool = False) -> None:
     """RR without layer-specific depth biases."""
     _prepare_remote()
     import lightning as L
@@ -115,6 +117,7 @@ def run_rr_no_depth_biases(run_id: str) -> None:
 
     cfg = load_benchmark_config(BENCHMARK_NAME)
     cfg = config_for_mode(cfg, "recurrent_residual")
+    cfg.compile = compile
 
     # To use the custom callback, we would normally pass it to Trainer.
     # Since run_benchmark handles Trainer instantiation, we'll monkey-patch pl_module
@@ -145,12 +148,12 @@ def run_rr_no_depth_biases(run_id: str) -> None:
 
 
 @app.local_entrypoint()
-def main(wait: bool = False) -> None:
+def main(wait: bool = False, compile: bool = False) -> None:
     run_id = make_run_id(BENCHMARK_NAME)
     handles = {
-        "vega_no_var_reg": run_vega_no_var_reg.spawn(run_id),
-        "vega_no_multiscale": run_vega_no_multiscale.spawn(run_id),
-        "rr_no_depth_biases": run_rr_no_depth_biases.spawn(run_id),
+        "vega_no_var_reg": run_vega_no_var_reg.spawn(run_id, compile=compile),
+        "vega_no_multiscale": run_vega_no_multiscale.spawn(run_id, compile=compile),
+        "rr_no_depth_biases": run_rr_no_depth_biases.spawn(run_id, compile=compile),
     }
     manifest = write_spawn_manifest(BENCHMARK_NAME, handles, run_id)
     print(f"Spawned {BENCHMARK_NAME} jobs with run_id={run_id}")
