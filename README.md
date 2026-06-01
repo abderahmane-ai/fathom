@@ -151,8 +151,44 @@ benchmarks/
   depth_needle/
   scaling_efficiency/
 conf/                   # Hydra YAML configs
+scripts/
+  ingest/               # Walk the artifact root -> per-benchmark CSVs
+  plots/                # PNG+PDF publication-quality plots
+  tables/               # Per-benchmark markdown summary tables
+  render_summary.py     # Build a top-level SUMMARY.md from per-benchmark ones
 tests/
 ```
+
+## Reporting (plots + tables from Modal artifacts)
+
+After a benchmark run (the Modal volume is mounted at `/artifacts` by default in the
+Docker image), pull it back to a local directory and run:
+
+```bash
+make report ARTIFACT_ROOT=./artifacts
+```
+
+This drives the full reporting pipeline:
+
+1. **Ingest** (`scripts/ingest/collect.py`): walks the artifact root, reads
+   `run.json` / `status.json` / `dps.json` / `metrics.csv` per run, and writes
+   per-benchmark CSVs to `results/aggregate/`.
+2. **Plots** (`scripts/plots/*.py`): reads the CSVs and writes PNG+PDF figures
+   to `plots/<benchmark>/`.  All plots share a common style (seaborn colorblind,
+   DejaVu Sans, 4×3 inches at 150 DPI).
+3. **Tables** (`scripts/tables/*.py`): reads the CSVs and writes per-benchmark
+   GitHub-flavored markdown summaries to `results/<benchmark>/SUMMARY.md`.  The
+   best value in each column is bolded.
+4. **Render** (`scripts/render_summary.py`): concatenates the per-benchmark
+   summaries into a top-level `results/SUMMARY.md` with a TOC and a
+   one-paragraph description per benchmark.
+
+Individual sub-pipelines can be run as `make ingest`, `make plots`, `make tables`,
+or `make summary`.  Override `ARTIFACT_ROOT=...` to point at a different volume
+or local copy.
+
+The reporting pipeline is end-to-end smoke-tested by `tests/test_render_summary.py`
+and the per-table tests in `tests/test_tables.py`.
 
 ## Citation
 
