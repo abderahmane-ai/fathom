@@ -208,14 +208,22 @@ class HyperConnection(nn.Module):
         return self._permutation_convex_res(H_norm)
 
     def _sinkhorn_knopp_res(self, H_norm: torch.Tensor) -> torch.Tensor:
-        """Original DeepSeek mHC (arXiv:2512.24880 Eq. 19): H_res = SK(exp(...))."""
+        """Original DeepSeek mHC (arXiv:2512.24880 Eq. 19): H_res = SK(exp(...)).
+
+        We use the per-row log-sum-exp stability trick (subtract row max before
+        ``exp``) so the operation is safe under fp16/bf16 at training-time
+        activation magnitudes.  This matches the canonical reference impls
+        (svdrecbd/mhc-mlx, aamir-gmail/MC-Hyper-Connections-Implementation) and
+        is bit-identical to the naive ``exp`` when logits are bounded.
+        """
         B, S = H_norm.shape[:2]
         n = self.num_channels
         # α · x'W + b → (B, S, n^2), then mat() reshape to (B, S, n, n).
         raw = self.alpha_res * (H_norm @ self.W_res) + self.b_res.reshape(1, 1, n * n)
         H_res_logits = raw.reshape(B, S, n, n)
-        # exp → Sinkhorn-Knopp.  Use fp32 for the SK loop's numerical stability.
-        M = H_res_logits.float().exp()
+        # Per-row max subtraction for fp16/bf16 safety, then exp → Sinkhorn-Knopp.
+        # Use fp32 throughout the SK loop; the final cast back happens after.
+        M = (H_res_logits - H_res_logits.max(dim=-1, keepdim=True).values).float().exp()
         for _ in range(self.t_max):
             M = M / (M.sum(dim=-1, keepdim=True) + 1e-12)  # row-normalize
             M = M / (M.sum(dim=-2, keepdim=True) + 1e-12)  # col-normalize

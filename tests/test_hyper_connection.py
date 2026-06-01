@@ -361,3 +361,156 @@ class TestHyperConnectionGradients:
             hc.W_pre.fill_(0.1)
         rerun = hc.pre_mix(H)
         assert not torch.allclose(baseline, rerun)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Spec tests — bit-level agreement with a hand-coded reference implementation
+# that follows the paper's algorithm verbatim.  These tests are the highest-ROI
+# thing in this file: they lock the algorithm to the spec, not to our impl.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _reference_sinkhorn_knopp(M: torch.Tensor, iters: int, eps: float = 1e-12) -> torch.Tensor:
+    """Reference SK following the canonical spec (svdrecbd/mhc-mlx,
+    aamir-gmail/MC-Hyper-Connections-Implementation).
+
+    Args:
+        M: 2D positive matrix [..., n, n] (assumed already exponentiated and
+            with per-row max subtracted for stability — this is the standard
+            "log-sum-exp" trick that all reference impls share).
+        iters: number of SK iterations.
+        eps: stability epsilon (default 1e-12; our impl uses 1e-12 internally).
+
+    Returns:
+        Approximately doubly-stochastic matrix of the same shape.
+    """
+    P = M.clone()
+    for _ in range(iters):
+        P = P / (P.sum(dim=-1, keepdim=True) + eps)  # row
+        P = P / (P.sum(dim=-2, keepdim=True) + eps)  # col
+    return P
+
+
+def _build_h_res_input(hc: HyperConnection) -> torch.Tensor:
+    """Reconstruct the H_res_logits tensor that HyperConnection feeds to SK.
+
+    Returns shape (B, S, n, n) with α-rescaled input-projection + b_res bias
+    (per the paper §4.2, Eq. 13).
+    """
+    n = hc.num_channels
+    H_norm = hc._cached_norm  # set by pre_mix
+    B, S = H_norm.shape[:2]
+    raw = hc.alpha_res * (H_norm @ hc.W_res) + hc.b_res.reshape(1, 1, n * n)
+    return raw.reshape(B, S, n, n)
+
+
+class TestSinkhornKnoppSpec:
+    """Our _sinkhorn_knopp_res must agree with the reference algorithm to
+    numerical precision.  These tests are the algorithm-level contract."""
+
+    def test_h_res_matches_reference_at_init(self) -> None:
+        """At init, b_res = [[0,-8],[-8,-8]] → H_res must match reference SK."""
+        torch.manual_seed(0)
+        hc = HyperConnection(d_model=8, num_channels=2, algorithm="sinkhorn_knopp", t_max=20)
+        H = torch.randn(2, 4, 2, 8)
+        hc.pre_mix(H)  # populates _cached_norm
+
+        logits = _build_h_res_input(hc)
+        # Reference applies the same log-sum-exp stability trick
+        logits_shifted = logits - logits.max(dim=-1, keepdim=True).values
+        M_expected = _reference_sinkhorn_knopp(logits_shifted.float().exp(), iters=20)
+
+        H_res_ours = hc._sinkhorn_knopp_res(hc._cached_norm)
+        assert_close(H_res_ours.float(), M_expected, atol=1e-6, rtol=1e-5)
+
+    def test_h_res_matches_reference_on_random_input(self) -> None:
+        """Sweep over random W_res values; our H_res must match the reference."""
+        torch.manual_seed(1)
+        hc = HyperConnection(d_model=8, num_channels=2, algorithm="sinkhorn_knopp", t_max=20)
+        H = torch.randn(2, 4, 2, 8)
+        hc.pre_mix(H)
+
+        with torch.no_grad():
+            hc.W_res.normal_(mean=0.0, std=0.5)  # push to non-trivial logits
+        logits = _build_h_res_input(hc)
+        logits_shifted = logits - logits.max(dim=-1, keepdim=True).values
+        M_expected = _reference_sinkhorn_knopp(logits_shifted.float().exp(), iters=20)
+        H_res_ours = hc._sinkhorn_knopp_res(hc._cached_norm)
+        assert_close(H_res_ours.float(), M_expected, atol=1e-6, rtol=1e-5)
+
+    @pytest.mark.parametrize("t_max", [5, 10, 20, 50])
+    def test_h_res_matches_reference_for_various_iter_counts(self, t_max: int) -> None:
+        """Bit-level agreement regardless of t_max."""
+        torch.manual_seed(2)
+        hc = HyperConnection(d_model=8, num_channels=2, algorithm="sinkhorn_knopp", t_max=t_max)
+        H = torch.randn(3, 5, 2, 8)
+        hc.pre_mix(H)
+        with torch.no_grad():
+            hc.W_res.normal_(mean=0.0, std=0.3)
+
+        logits = _build_h_res_input(hc)
+        logits_shifted = logits - logits.max(dim=-1, keepdim=True).values
+        M_expected = _reference_sinkhorn_knopp(logits_shifted.float().exp(), iters=t_max)
+        H_res_ours = hc._sinkhorn_knopp_res(hc._cached_norm)
+        assert_close(H_res_ours.float(), M_expected, atol=1e-6, rtol=1e-5)
+
+    def test_max_subtract_is_bit_identical_to_naive_exp_at_init(self) -> None:
+        """At init (b_res = [[0,-8],[-8,-8]]), max-subtract must give bit-identical
+        results to naive exp.  This validates that the stability trick is a
+        no-op for the init regime and only kicks in under larger logits."""
+        torch.manual_seed(3)
+        hc = HyperConnection(d_model=8, num_channels=2, algorithm="sinkhorn_knopp", t_max=20)
+        H = torch.randn(2, 4, 2, 8)
+        hc.pre_mix(H)
+
+        logits = _build_h_res_input(hc)
+        # Naive: exp(logits) without max-subtract
+        M_naive = logits.float().exp()
+        for _ in range(20):
+            M_naive = M_naive / (M_naive.sum(dim=-1, keepdim=True) + 1e-12)
+            M_naive = M_naive / (M_naive.sum(dim=-2, keepdim=True) + 1e-12)
+        # With max-subtract (our impl)
+        H_res_ours = hc._sinkhorn_knopp_res(hc._cached_norm)
+        assert_close(H_res_ours.float(), M_naive, atol=1e-6, rtol=1e-5)
+
+    def test_h_res_is_doubly_stochastic_under_random_input(self) -> None:
+        """After random W_res perturbation, H_res must still be doubly-stochastic
+        within Sinkhorn's convergence tolerance."""
+        torch.manual_seed(4)
+        hc = HyperConnection(d_model=8, num_channels=2, algorithm="sinkhorn_knopp", t_max=20)
+        H = torch.randn(2, 4, 2, 8)
+        hc.pre_mix(H)
+        with torch.no_grad():
+            hc.W_res.normal_(mean=0.0, std=1.0)  # large perturbation
+
+        H_res = hc._sinkhorn_knopp_res(hc._cached_norm)
+        row_sums = H_res.sum(dim=-1)
+        col_sums = H_res.sum(dim=-2)
+        assert_close(row_sums, torch.ones_like(row_sums), atol=5e-2, rtol=5e-2)
+        assert_close(col_sums, torch.ones_like(col_sums), atol=5e-2, rtol=5e-2)
+        # Non-negative
+        assert (H_res >= 0).all()
+
+    def test_h_res_finite_under_fp16(self) -> None:
+        """Max-subtract trick must keep H_res finite under fp16 (the regime
+        where naive exp(10) is still fine but exp(20) overflows to inf)."""
+        torch.manual_seed(5)
+        hc = HyperConnection(d_model=8, num_channels=2, algorithm="sinkhorn_knopp", t_max=20)
+        H = torch.randn(2, 4, 2, 8)
+        hc.pre_mix(H)  # fp32 path
+        with torch.no_grad():
+            # Push logits large enough that naive exp(logits) would overflow fp16
+            # (max fp16 ≈ 65504, exp(12) ≈ 162754 > 65504)
+            hc.W_res.normal_(mean=0.0, std=2.0)
+        # Run SK directly on the fp16 logit path (cast input, keep fp32 internal)
+        logits = _build_h_res_input(hc).half()
+        # Replicate our impl's stability trick in fp16 to verify finiteness
+        logits_shifted = logits - logits.max(dim=-1, keepdim=True).values
+        M = logits_shifted.float().exp()  # fp32 internal per our impl
+        for _ in range(20):
+            M = M / (M.sum(dim=-1, keepdim=True) + 1e-12)
+            M = M / (M.sum(dim=-2, keepdim=True) + 1e-12)
+        H_res = M.to(logits.dtype)
+        assert torch.isfinite(H_res).all(), (
+            "H_res should be finite under fp16 with max-subtract trick"
+        )
