@@ -58,9 +58,7 @@ class TestTransformerDecoderMHC:
             logits = decoder(input_ids)
         assert logits.shape == (B, S, 256)
 
-    def test_decoder_main_channel_close_to_standard_at_init(
-        self, mhc_cfg, standard_cfg, B, S, d_model
-    ):
+    def test_decoder_main_channel_close_to_standard_at_init(self, mhc_cfg, standard_cfg, B, S, d_model):
         """At init, the mHC main channel should approximately follow the
         standard transformer's trajectory.  This is *not* bit-for-bit
         because the paper's init protocol gives H_post ≈ [1.462, 0.538]

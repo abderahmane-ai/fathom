@@ -26,8 +26,9 @@ import csv
 import json
 import logging
 import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from scripts.ingest.schemas import (
     DPSResult,

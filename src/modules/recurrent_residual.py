@@ -141,18 +141,14 @@ class RecurrentResidualCell(nn.Module):
             # Down weights: shape (3 * rank, d_model)
             # Initialize each block of shape (rank, d_model) independently
             for i in range(3):
-                nn.init.normal_(
-                    self.y_gates_down.weight[i * rank : (i + 1) * rank], std=gate_init_std
-                )
+                nn.init.normal_(self.y_gates_down.weight[i * rank : (i + 1) * rank], std=gate_init_std)
 
             # Up weights: shape (3 * d_model, 3 * rank)
             # Set to zero, then initialize diagonal blocks of shape (d_model, rank) independently
             self.y_gates_up.weight.zero_()
             for i in range(3):
                 nn.init.normal_(
-                    self.y_gates_up.weight[
-                        i * d_model : (i + 1) * d_model, i * rank : (i + 1) * rank
-                    ],
+                    self.y_gates_up.weight[i * d_model : (i + 1) * d_model, i * rank : (i + 1) * rank],
                     std=gate_init_std,
                 )
 
@@ -166,9 +162,7 @@ class RecurrentResidualCell(nn.Module):
         self.register_buffer("last_read_gate", torch.tensor(0.0), persistent=False)
         self.register_buffer("last_update_gate", torch.tensor(0.0), persistent=False)
 
-    def get_initial_state(
-        self, batch_size: int, seq_len: int, device: torch.device | None = None
-    ) -> torch.Tensor:
+    def get_initial_state(self, batch_size: int, seq_len: int, device: torch.device | None = None) -> torch.Tensor:
         """Return m_0 broadcast to (batch_size, seq_len, d_model)."""
         target_device = device if device is not None else self.m_init.device
         return self.m_init.to(target_device).view(1, 1, -1).expand(batch_size, seq_len, -1).clone()

@@ -90,20 +90,12 @@ class TransformerDecoder(nn.Module):
         elif self.residual_mode == "full_attnres":
             max_full_layers = int(config.full_attnres.max_layers)
             if config.num_layers > max_full_layers:
-                raise ValueError(
-                    f"full_attnres is limited to {max_full_layers} layers "
-                    f"(requested {config.num_layers})."
-                )
+                raise ValueError(f"full_attnres is limited to {max_full_layers} layers (requested {config.num_layers}).")
 
         elif self.residual_mode == "hyper_connection":
             self.hc_channels = int(getattr(config.hyper_connection, "num_channels", 2))
 
-        self.layers: nn.ModuleList = nn.ModuleList(
-            [
-                TransformerLayer(config, rr_cell=self.rr_cell, vega_cell=self.vega_cell)
-                for _ in range(config.num_layers)
-            ]
-        )
+        self.layers: nn.ModuleList = nn.ModuleList([TransformerLayer(config, rr_cell=self.rr_cell, vega_cell=self.vega_cell) for _ in range(config.num_layers)])
 
         self.ln_f = RMSNorm(config.d_model)
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)

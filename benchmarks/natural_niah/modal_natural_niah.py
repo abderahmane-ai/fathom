@@ -28,7 +28,6 @@ from benchmarks.common.modal_utils import (
     print_run_summary,
     write_spawn_manifest,
 )
-from benchmarks.common.modal_utils import default_retries
 from benchmarks.common.run_metadata import (
     WallClock,
     capture_run_metadata,
@@ -156,9 +155,7 @@ def _run_niah_eval(mode: str, lm_run_id: str, compile: bool = False) -> None:
         model = TransformerDecoder(cfg.model)
         # Lightning checkpoints wrap the model state_dict in `state_dict`, often prefixed with `model.`
         state_dict = torch.load(checkpoint_path, map_location="cpu")["state_dict"]
-        state_dict = {
-            k.replace("model.", ""): v for k, v in state_dict.items() if k.startswith("model.")
-        }
+        state_dict = {k.replace("model.", ""): v for k, v in state_dict.items() if k.startswith("model.")}
         model.load_state_dict(state_dict, strict=False)
         model = model.cuda().eval()
         if compile:

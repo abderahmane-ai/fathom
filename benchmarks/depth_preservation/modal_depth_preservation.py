@@ -13,7 +13,6 @@ import torch
 from omegaconf import DictConfig
 
 from benchmarks.common.artifacts import (
-    benchmark_dir,
     repo_root,
     run_dir,
     write_run_metadata,
@@ -24,8 +23,8 @@ from benchmarks.common.modal_utils import (
     ARTIFACT_MOUNT,
     REMOTE_ROOT,
     VOLUME_NAME,
-    modal_ignore_patterns,
     default_retries,
+    modal_ignore_patterns,
     print_run_summary,
     write_spawn_manifest,
 )
@@ -155,7 +154,10 @@ def _run_dps_evaluation(cfg: DictConfig, residual_mode: str, run_id: str) -> dic
 
             log.info(
                 "Layer %d DPS: %.4f | GPS: %.4f (Dissim: %.4f)",
-                k, dps, gps, res["mean_dissim"],
+                k,
+                dps,
+                gps,
+                res["mean_dissim"],
             )
 
     dri = calculate_dri(dps_scores)
@@ -182,8 +184,6 @@ def _run_mode(residual_mode: str, run_id: str, compile: bool = False) -> None:
         compile: Whether to compile the model.
     """
     import traceback
-
-    from benchmarks.common.param_count import count_parameters
 
     _prepare_remote()
     cfg = config_for_mode(load_benchmark_config(BENCHMARK_NAME), residual_mode)

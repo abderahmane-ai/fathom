@@ -30,7 +30,7 @@ class JsonlLogger:
     def __init__(self, path: Path | str, run_id: str | None = None) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._fp = open(self.path, "a", encoding="utf-8")
+        self._fp = open(self.path, "a", encoding="utf-8")  # noqa: SIM115
         self._lock = threading.Lock()
         self.run_id = run_id
         self.n_events = 0
@@ -64,14 +64,14 @@ class JsonlLogger:
             if not self._fp.closed:
                 self._fp.close()
 
-    def __enter__(self) -> "JsonlLogger":
+    def __enter__(self) -> JsonlLogger:
         return self
 
     def __exit__(self, *exc: Any) -> None:
         self.close()
 
     def __del__(self) -> None:
-        try:
+        try:  # noqa: SIM105
             self.close()
         except Exception:
             pass

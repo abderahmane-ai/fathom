@@ -41,7 +41,7 @@ class DPSResult:
     benchmark_name: str = "depth_preservation"
 
     @classmethod
-    def from_json(cls, path: Path | str) -> "DPSResult":
+    def from_json(cls, path: Path | str) -> DPSResult:
         """Load a DPS result from a JSON file, accepting both legacy and canonical paths."""
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
         dps_scores = payload.get("dps_scores", []) or []
@@ -105,7 +105,7 @@ class LatencyProfile:
     tokens_per_second: float | None = None
 
     @classmethod
-    def from_json(cls, path: Path | str) -> list["LatencyProfile"]:
+    def from_json(cls, path: Path | str) -> list[LatencyProfile]:
         """Load a full profile (one entry per (mode, layers) pair)."""
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
         run_id = Path(path).parent.name
@@ -151,7 +151,7 @@ class NIAHResult:
     input_length: int | None = None
 
     @classmethod
-    def from_json(cls, path: Path | str) -> "NIAHResult":
+    def from_json(cls, path: Path | str) -> NIAHResult:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
         return cls(
             residual_mode=payload.get("mode", "?"),
@@ -191,7 +191,7 @@ class LMRunSummary:
     peak_cuda_memory_mb: float | None = None
 
     @classmethod
-    def from_json(cls, path: Path | str) -> "LMRunSummary":
+    def from_json(cls, path: Path | str) -> LMRunSummary:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
         return cls(
             benchmark_name=payload.get("benchmark_name", "?"),
@@ -238,7 +238,7 @@ class LMRunStep:
     learning_rate: float | None = None
 
     @classmethod
-    def from_metrics_csv(cls, path: Path | str, *, benchmark_name: str, residual_mode: str, run_id: str) -> list["LMRunStep"]:
+    def from_metrics_csv(cls, path: Path | str, *, benchmark_name: str, residual_mode: str, run_id: str) -> list[LMRunStep]:
         """Read Lightning's metrics.csv and produce one LMRunStep per row.
 
         Handles the column names Lightning uses: ``step``, ``epoch``, ``train/loss``,

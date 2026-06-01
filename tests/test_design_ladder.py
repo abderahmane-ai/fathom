@@ -351,9 +351,7 @@ def test_attnres_uniform_mean_generalises_to_n_blocks() -> None:
         (4, "attnres", "mean([*blocks, partial_block])", None),
     ],
 )
-def test_design_ladder_init_contract_summary(
-    rung: int, mechanism: str, init_form: str, strict: bool | None
-) -> None:
+def test_design_ladder_init_contract_summary(rung: int, mechanism: str, init_form: str, strict: bool | None) -> None:
     """Every rung's init contract, in one parametrised table.
 
     This test always passes — its purpose is to make the design-ladder

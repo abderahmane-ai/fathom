@@ -8,7 +8,9 @@ winner pops out.
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from pathlib import Path
+from typing import Any
 
 from tabulate import tabulate
 
@@ -77,10 +79,7 @@ def bold_winner(
         return [dict(r, _bolded=False) for r in rows]
     values = [r[column] for r in valid]
     target = min(values) if lower_is_better else max(values)
-    return [
-        dict(r, _bolded=(r.get(column) is not None and r[column] == target))
-        for r in rows
-    ]
+    return [dict(r, _bolded=(r.get(column) is not None and r[column] == target)) for r in rows]
 
 
 def apply_bold(rows: list[dict[str, Any]], value_columns: Iterable[str]) -> list[dict[str, Any]]:
@@ -106,7 +105,7 @@ def apply_bold(rows: list[dict[str, Any]], value_columns: Iterable[str]) -> list
 
 
 def write_markdown_table(
-    out_path: str | "Path",
+    out_path: str | Path,
     title: str,
     rows: list[dict[str, Any]],
     headers: list[str] | dict[str, str],
@@ -126,8 +125,6 @@ def write_markdown_table(
         floatfmt: Passed to tabulate.
         preamble: Optional text between the title and the table.
     """
-    from pathlib import Path
-
     path = Path(out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     body = [f"# {title}\n"]

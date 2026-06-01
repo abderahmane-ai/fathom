@@ -25,7 +25,9 @@ def test_dps_table(tmp_path: Path) -> None:
     out = tmp_path / "SUMMARY.md"
     result = subprocess.run(
         [sys.executable, "-m", "scripts.tables.dps_table", "--csv", str(csv_path), "--out", str(out)],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
     text = out.read_text()
@@ -51,9 +53,10 @@ def test_lm_quality_table(tmp_path: Path) -> None:
     )
     out = tmp_path / "SUMMARY.md"
     result = subprocess.run(
-        [sys.executable, "-m", "scripts.tables.lm_quality_table",
-         "--csv", str(csv_path), "--steps-csv", str(steps_path), "--out", str(out)],
-        capture_output=True, text=True, check=False,
+        [sys.executable, "-m", "scripts.tables.lm_quality_table", "--csv", str(csv_path), "--steps-csv", str(steps_path), "--out", str(out)],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
     text = out.read_text()
@@ -81,9 +84,10 @@ def test_ablation_table(tmp_path: Path) -> None:
     )
     out = tmp_path / "SUMMARY.md"
     result = subprocess.run(
-        [sys.executable, "-m", "scripts.tables.ablation_table",
-         "--csv", str(csv_path), "--steps-csv", str(steps_path), "--out", str(out)],
-        capture_output=True, text=True, check=False,
+        [sys.executable, "-m", "scripts.tables.ablation_table", "--csv", str(csv_path), "--steps-csv", str(steps_path), "--out", str(out)],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
     text = out.read_text()
@@ -104,9 +108,10 @@ def test_niah_table(tmp_path: Path) -> None:
     )
     out = tmp_path / "SUMMARY.md"
     result = subprocess.run(
-        [sys.executable, "-m", "scripts.tables.niah_table",
-         "--csv", str(csv_path), "--out", str(out)],
-        capture_output=True, text=True, check=False,
+        [sys.executable, "-m", "scripts.tables.niah_table", "--csv", str(csv_path), "--out", str(out)],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
     text = out.read_text()
@@ -133,9 +138,10 @@ def test_iso_flop_table(tmp_path: Path) -> None:
     )
     out = tmp_path / "SUMMARY.md"
     result = subprocess.run(
-        [sys.executable, "-m", "scripts.tables.iso_flop_table",
-         "--csv", str(csv_path), "--steps-csv", str(steps_path), "--out", str(out)],
-        capture_output=True, text=True, check=False,
+        [sys.executable, "-m", "scripts.tables.iso_flop_table", "--csv", str(csv_path), "--steps-csv", str(steps_path), "--out", str(out)],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
     text = out.read_text()

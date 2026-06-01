@@ -42,9 +42,7 @@ class TestRRCellInit:
         actual = sum(p.numel() for p in cell.parameters())
         # Formula: 4 gates × 2 sublayers × d (depth biases) + per-cell params
         # At minimum, actual >> d_model; verify we have a reasonable lower bound.
-        assert actual >= cell.num_sublayers * 4 * d_model, (
-            f"Expected at least {cell.num_sublayers * 4 * d_model} params, got {actual}"
-        )
+        assert actual >= cell.num_sublayers * 4 * d_model, f"Expected at least {cell.num_sublayers * 4 * d_model} params, got {actual}"
 
 
 class TestRRCellMemoryUpdate:

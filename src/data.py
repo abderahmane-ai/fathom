@@ -95,9 +95,7 @@ class LanguageModelDataModule(LightningDataModule):
         chunks = []
         for chunk in tokenised.data.column("input_ids").chunks:
             flattened = pc.list_flatten(chunk)
-            chunks.append(
-                torch.as_tensor(flattened.to_numpy(zero_copy_only=False).copy(), dtype=torch.long)
-            )
+            chunks.append(torch.as_tensor(flattened.to_numpy(zero_copy_only=False).copy(), dtype=torch.long))
         if not chunks:
             return torch.empty(0, dtype=torch.long)
 

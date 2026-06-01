@@ -83,9 +83,7 @@ class BenchmarkModule(lightning.LightningModule):
         # does not orphan the hooks.
         self._grad_tracker: PerLayerGradTracker | None = None
         self._act_tracker: ActivationMagnitudeTracker | None = None
-        self._track_diagnostics: bool = bool(
-            (benchmark_cfg or {}).get("track_per_layer_metrics", False)
-        )
+        self._track_diagnostics: bool = bool((benchmark_cfg or {}).get("track_per_layer_metrics", False))
 
     def _loss_from_batch(
         self,
@@ -155,10 +153,7 @@ class BenchmarkModule(lightning.LightningModule):
         if bad_params:
             print(f"[DIAG step={step}] BAD parameters: {bad_params}")
         else:
-            print(
-                f"[DIAG step={step}] All parameters look clean — "
-                "NaN may originate in activations/ops."
-            )
+            print(f"[DIAG step={step}] All parameters look clean — NaN may originate in activations/ops.")
         print(f"[DIAG step={step}] *** end of parameter dump ***\n")
 
     def training_step(
@@ -241,10 +236,7 @@ class BenchmarkModule(lightning.LightningModule):
         for name, p in self.named_parameters():
             if not p.requires_grad:
                 continue
-            is_bias_or_gain_or_decay = any(
-                keyword in name
-                for keyword in ("bias", "decay", "gain", "scale", "m_init", "damp_weight")
-            )
+            is_bias_or_gain_or_decay = any(keyword in name for keyword in ("bias", "decay", "gain", "scale", "m_init", "damp_weight"))
             if p.dim() < 2 or is_bias_or_gain_or_decay:
                 no_decay_params.append(p)
             else:
@@ -293,10 +285,7 @@ class BenchmarkModule(lightning.LightningModule):
         self.log("grad/global_norm", total_norm, on_step=True, prog_bar=False)
         # Diagnostic: warn in stdout if any gradient is already NaN/Inf before clipping.
         if torch.isnan(total_norm) or torch.isinf(total_norm):
-            print(
-                f"\n[DIAG step={self.global_step}] *** NaN/Inf GRADIENT NORM "
-                f"({total_norm.item()}) ***"
-            )
+            print(f"\n[DIAG step={self.global_step}] *** NaN/Inf GRADIENT NORM ({total_norm.item()}) ***")
             for name, param in self.named_parameters():
                 if param.grad is None:
                     continue
@@ -331,9 +320,7 @@ class BenchmarkModule(lightning.LightningModule):
         correct = (preds[mask] == targets[mask]).float().sum()
         total = mask.float().sum()
         if total > 0:
-            self.log(
-                f"{prefix}/needle_acc", correct / total, on_step=True, on_epoch=True, prog_bar=True
-            )
+            self.log(f"{prefix}/needle_acc", correct / total, on_step=True, on_epoch=True, prog_bar=True)
 
     def _log_rr_gates(self) -> None:
         """Log RR diagnostics when the model exposes them.
@@ -627,11 +614,7 @@ def run_benchmark(cfg: DictConfig, benchmark_name: str, residual_mode: str, run_
             "peak_cuda_memory_mb": peak_cuda_memory_mb(),
         }
         write_json(metrics_dir(benchmark_name, residual_mode, run_id) / "summary.json", summary)
-        status_fields = {
-            k: v
-            for k, v in summary.items()
-            if k not in ("benchmark_name", "residual_mode", "run_id")
-        }
+        status_fields = {k: v for k, v in summary.items() if k not in ("benchmark_name", "residual_mode", "run_id")}
         write_status(benchmark_name, residual_mode, run_id, status="completed", **status_fields)
         write_run_metadata(
             benchmark_name,

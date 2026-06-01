@@ -6,8 +6,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 
 def test_render_summary_writes_top_level_md(tmp_path: Path) -> None:
     """Build two per-benchmark SUMMARY.md files, run render_summary, verify output."""

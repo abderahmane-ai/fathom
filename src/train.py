@@ -57,9 +57,7 @@ class LanguageModel(L.LightningModule):
         n_params = sum(p.numel() for p in self.model.parameters())
         log.info("Initialized model with %s M parameters", f"{n_params / 1e6:.1f}")
 
-    def _compute_loss(
-        self, batch: torch.Tensor | tuple[torch.Tensor, torch.Tensor]
-    ) -> torch.Tensor:
+    def _compute_loss(self, batch: torch.Tensor | tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
         """Computes next-token cross-entropy loss on shifted or pre-split inputs."""
         if isinstance(batch, (tuple, list)):
             input_ids, labels = batch
@@ -108,10 +106,7 @@ class LanguageModel(L.LightningModule):
         if bad_params:
             print(f"[DIAG step={step}] BAD parameters: {bad_params}")
         else:
-            print(
-                f"[DIAG step={step}] All parameters look clean — "
-                "NaN may originate in activations/ops."
-            )
+            print(f"[DIAG step={step}] All parameters look clean — NaN may originate in activations/ops.")
         print(f"[DIAG step={step}] *** end of parameter dump ***\n")
 
     def training_step(self, batch: torch.Tensor, _batch_idx: int) -> torch.Tensor:
@@ -125,15 +120,11 @@ class LanguageModel(L.LightningModule):
                 loss = ce_loss - reg
                 self.log("train/vega_reg", reg.detach(), on_step=True)
         self.log("train/loss", ce_loss, on_step=True, on_epoch=False, prog_bar=True)
-        self.log(
-            "train/ppl", torch.exp(ce_loss.detach().clamp(max=20.0)), on_step=True, on_epoch=False
-        )
+        self.log("train/ppl", torch.exp(ce_loss.detach().clamp(max=20.0)), on_step=True, on_epoch=False)
         self._log_needle_accuracy(batch, "train")
         return loss
 
-    def validation_step(
-        self, batch: torch.Tensor | tuple[torch.Tensor, torch.Tensor], _batch_idx: int
-    ) -> None:
+    def validation_step(self, batch: torch.Tensor | tuple[torch.Tensor, torch.Tensor], _batch_idx: int) -> None:
         loss = self._compute_loss(batch)
         self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("val/ppl", torch.exp(loss), on_step=False, on_epoch=True, sync_dist=True)
@@ -157,10 +148,7 @@ class LanguageModel(L.LightningModule):
         self.log("grad/global_norm", total_norm, on_step=True)
         # Diagnostic: warn in stdout if any gradient is already NaN/Inf before clipping.
         if torch.isnan(total_norm) or torch.isinf(total_norm):
-            print(
-                f"\n[DIAG step={self.global_step}] *** NaN/Inf GRADIENT NORM "
-                f"({total_norm.item()}) ***"
-            )
+            print(f"\n[DIAG step={self.global_step}] *** NaN/Inf GRADIENT NORM ({total_norm.item()}) ***")
             for name, param in self.named_parameters():
                 if param.grad is None:
                     continue
@@ -194,9 +182,7 @@ class LanguageModel(L.LightningModule):
             correct = (preds[mask] == targets[mask]).float().sum()
             total = mask.float().sum()
         if total > 0:
-            self.log(
-                f"{prefix}/needle_acc", correct / total, on_step=True, on_epoch=True, prog_bar=True
-            )
+            self.log(f"{prefix}/needle_acc", correct / total, on_step=True, on_epoch=True, prog_bar=True)
 
     # pyrefly: ignore [bad-override]
     def configure_optimizers(self) -> dict[str, Any]:
@@ -210,10 +196,7 @@ class LanguageModel(L.LightningModule):
         for name, p in self.model.named_parameters():
             if not p.requires_grad:
                 continue
-            is_bias_or_gain_or_decay = any(
-                keyword in name
-                for keyword in ("bias", "decay", "gain", "scale", "m_init", "damp_weight")
-            )
+            is_bias_or_gain_or_decay = any(keyword in name for keyword in ("bias", "decay", "gain", "scale", "m_init", "damp_weight"))
             if p.dim() < 2 or is_bias_or_gain_or_decay:
                 no_decay_params.append(p)
             else:

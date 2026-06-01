@@ -163,16 +163,10 @@ class VEGACell(nn.Module):
         self.decay = nn.Parameter(torch.empty(self.num_sublayers, n_heads, self.r_head))
         n_slow_heads = n_heads - n_fast_heads
         with torch.no_grad():
-            fast_logits = torch.linspace(
-                fast_decay_range[0], fast_decay_range[1], n_fast_heads * self.r_head
-            )
-            slow_logits = torch.linspace(
-                slow_decay_range[0], slow_decay_range[1], n_slow_heads * self.r_head
-            )
+            fast_logits = torch.linspace(fast_decay_range[0], fast_decay_range[1], n_fast_heads * self.r_head)
+            slow_logits = torch.linspace(slow_decay_range[0], slow_decay_range[1], n_slow_heads * self.r_head)
             all_logits = torch.cat([fast_logits, slow_logits])
-            self.decay.copy_(
-                all_logits.view(1, self.n_heads, self.r_head).expand(self.num_sublayers, -1, -1)
-            )
+            self.decay.copy_(all_logits.view(1, self.n_heads, self.r_head).expand(self.num_sublayers, -1, -1))
 
         # Orthogonal init for the EMA projections — improves conditioning of the state.
         with torch.no_grad():
@@ -206,9 +200,7 @@ class VEGACell(nn.Module):
         """Alias for the fused QKV projection (backward-compatible name used in tests)."""
         return self.qkv_proj
 
-    def get_initial_state(
-        self, B: int, S: int, device: torch.device
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def get_initial_state(self, B: int, S: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         """Return zero-initialized (S_0, z_0) state tensors.
 
         Args:
@@ -222,9 +214,7 @@ class VEGACell(nn.Module):
         if self.use_vector_state:
             S0 = torch.zeros(B, S, self.n_heads, self.r_head, device=device, dtype=torch.float32)
         else:
-            S0 = torch.zeros(
-                B, S, self.n_heads, self.r_head, self.r_head, device=device, dtype=torch.float32
-            )
+            S0 = torch.zeros(B, S, self.n_heads, self.r_head, self.r_head, device=device, dtype=torch.float32)
         z0 = torch.zeros(B, S, self.n_heads, self.r_head, device=device, dtype=torch.float32)
         return S0, z0
 
@@ -262,9 +252,7 @@ class VEGACell(nn.Module):
         Q = Q.view(B, Seq, self.n_heads, self.r_head)
         # Fused write gate and read down projection
         fused_gate_down = self.fused_write_read_proj(y_norm)
-        write_gate_proj, read_proj_down_proj = fused_gate_down.split(
-            [self.rank, self.read_rank], dim=-1
-        )
+        write_gate_proj, read_proj_down_proj = fused_gate_down.split([self.rank, self.read_rank], dim=-1)
         g = torch.sigmoid(write_gate_proj).view(B, Seq, self.n_heads, self.r_head).float()
 
         # Per-sublayer query depth bias only. Key depth bias is omitted; query bias alone is

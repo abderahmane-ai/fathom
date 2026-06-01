@@ -39,10 +39,7 @@ class ActivationMagnitudeTracker:
     def attach(self) -> None:
         """Register a forward hook on every layer."""
         self._current_norms = [None] * len(self.model.layers)
-        self._handles = [
-            layer.register_forward_hook(self._make_hook(idx))
-            for idx, layer in enumerate(self.model.layers)
-        ]
+        self._handles = [layer.register_forward_hook(self._make_hook(idx)) for idx, layer in enumerate(self.model.layers)]
 
     def detach(self) -> None:
         """Remove all registered hooks."""

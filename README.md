@@ -1,5 +1,9 @@
 # Recurrent Residuals, VEGA, and Attention Residuals
 
+[![CI](https://github.com/anomalyco/recurrent-residuals/actions/workflows/ci.yml/badge.svg)](https://github.com/anomalyco/recurrent-residuals/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-276_passing-brightgreen)](tests/)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](pyproject.toml)
+
 A controlled comparison of **five** depth-stream residual mechanisms for causal transformer language models, organized as a **design ladder** of progressively richer approximations of the same operation: *letting a layer reach back into the history of hidden states produced earlier in the depth stream.*
 
 ## What Is Being Compared

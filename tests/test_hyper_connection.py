@@ -523,9 +523,7 @@ class TestSinkhornKnoppSpec:
             M = M / (M.sum(dim=-1, keepdim=True) + 1e-12)
             M = M / (M.sum(dim=-2, keepdim=True) + 1e-12)
         H_res = M.to(logits.dtype)
-        assert torch.isfinite(H_res).all(), (
-            "H_res should be finite under fp16 with max-subtract trick"
-        )
+        assert torch.isfinite(H_res).all(), "H_res should be finite under fp16 with max-subtract trick"
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -699,7 +697,4 @@ class TestHyperConnectionN4:
         """
         hc = HyperConnection(d_model=d, num_channels=n, algorithm="sinkhorn_knopp")
         actual = sum(p.numel() for p in hc.parameters())
-        assert actual == expected, (
-            f"n={n}, d={d}: actual={actual}, expected={expected}. "
-            f"Check the per-layer parameter breakdown in METHODOLOGY.md §5.3."
-        )
+        assert actual == expected, f"n={n}, d={d}: actual={actual}, expected={expected}. Check the per-layer parameter breakdown in METHODOLOGY.md §5.3."

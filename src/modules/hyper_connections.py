@@ -108,10 +108,7 @@ class HyperConnection(nn.Module):
     ) -> None:
         super().__init__()
         if num_channels < 2:
-            raise ValueError(
-                f"num_channels must be >= 2 for a residual stream to make sense "
-                f"(got {num_channels}).  Use the standard residual for n=1."
-            )
+            raise ValueError(f"num_channels must be >= 2 for a residual stream to make sense (got {num_channels}).  Use the standard residual for n=1.")
         if algorithm not in self.ALGORITHMS:
             raise ValueError(f"Unknown algorithm '{algorithm}'.  Must be one of {self.ALGORITHMS}.")
         if algorithm == "permutation_convex" and num_channels > 2:
@@ -130,8 +127,7 @@ class HyperConnection(nn.Module):
             )
         if use_static_input:
             raise NotImplementedError(
-                "use_static_input=True is not supported in this implementation; "
-                "the static-input path would require re-deriving the init biases."
+                "use_static_input=True is not supported in this implementation; the static-input path would require re-deriving the init biases."
             )
 
         self.d_model = d_model
@@ -281,10 +277,7 @@ class HyperConnection(nn.Module):
         """
         B, S, n, d = H.shape
         if n != self.num_channels:
-            raise ValueError(
-                f"Expected n={self.num_channels} channels, got {n}. "
-                f"All layers in a model must use the same num_channels."
-            )
+            raise ValueError(f"Expected n={self.num_channels} channels, got {n}. All layers in a model must use the same num_channels.")
 
         # Flatten to (B, S, n*d) and RMSNorm
         H_flat = H.reshape(B, S, n * d)
@@ -325,9 +318,7 @@ class HyperConnection(nn.Module):
 
         if self._cached_norm is None:
             raise RuntimeError(
-                "post_mix called without a prior pre_mix call. "
-                "Each layer must call pre_mix before post_mix so the "
-                "cached RMSNorm of the input is available."
+                "post_mix called without a prior pre_mix call. Each layer must call pre_mix before post_mix so the cached RMSNorm of the input is available."
             )
 
         H_norm = self._cached_norm

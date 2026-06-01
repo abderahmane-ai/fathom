@@ -87,14 +87,14 @@ class DPSEvaluator:
             # output might be a tuple:
             # - For block_attnres/full_attnres: (blocks/history_list, hidden_tensor)
             # - For standard/recurrent_residual: (hidden_tensor, memory_tensor)
-            if isinstance(output, tuple):
+            if isinstance(output, tuple):  # noqa: SIM108
                 hidden = output[1] if isinstance(output[0], list) else output[0]
             else:
                 hidden = output
             self._current_target = hidden.detach().float()
 
         def source_hook(module: nn.Module, inputs: tuple, output: torch.Tensor | tuple) -> None:
-            if isinstance(output, tuple):
+            if isinstance(output, tuple):  # noqa: SIM108
                 hidden = output[1] if isinstance(output[0], list) else output[0]
             else:
                 hidden = output
@@ -132,10 +132,7 @@ class DPSEvaluator:
                 Shape: (batch, seq) or flattened to matching token count.
         """
         if self._current_target is None or self._current_source is None:
-            raise RuntimeError(
-                "process_batch called but activations were not captured. "
-                "Did you run a forward pass?"
-            )
+            raise RuntimeError("process_batch called but activations were not captured. Did you run a forward pass?")
 
         # Reshape from (batch, seq, d) to (batch * seq, d)
         target = self._current_target.reshape(-1, self._current_target.size(-1))
@@ -178,9 +175,7 @@ class DPSEvaluator:
             elif hasattr(self.model, "model") and hasattr(self.model.model, "lm_head"):
                 head = self.model.model.lm_head
             else:
-                raise AttributeError(
-                    "Could not find lm_head in the model to compute early gradients."
-                )
+                raise AttributeError("Could not find lm_head in the model to compute early gradients.")
 
             with torch.no_grad():
                 # Compute early logits using LayerNorm-normalized activation y (which is a_k)

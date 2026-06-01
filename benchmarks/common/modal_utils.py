@@ -10,7 +10,7 @@ from typing import Any
 
 import modal
 
-from benchmarks.common.artifacts import benchmark_dir, find_all_runs, repo_root
+from benchmarks.common.artifacts import benchmark_dir, repo_root
 
 REMOTE_ROOT = "/root/rr"
 ARTIFACT_MOUNT = "/artifacts"
@@ -71,10 +71,7 @@ def write_spawn_manifest(
         "spawned_at": datetime.now(timezone.utc).isoformat(),
         "volume": VOLUME_NAME,
         "artifact_mount": ARTIFACT_MOUNT,
-        "jobs": {
-            mode: {"object_id": getattr(handle, "object_id", str(handle))}
-            for mode, handle in handles.items()
-        },
+        "jobs": {mode: {"object_id": getattr(handle, "object_id", str(handle))} for mode, handle in handles.items()},
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     return path
@@ -134,7 +131,11 @@ def print_run_summary(
                     n_failed += 1
                 log.info(
                     "%-22s %-10s %10s %12s %12s",
-                    mode, status, step, _fmt_num(elapsed), _fmt_num(peak),
+                    mode,
+                    status,
+                    step,
+                    _fmt_num(elapsed),
+                    _fmt_num(peak),
                 )
                 break
         else:

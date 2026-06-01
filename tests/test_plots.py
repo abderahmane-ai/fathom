@@ -7,8 +7,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -24,22 +22,25 @@ def test_dps_curves(tmp_path: Path) -> None:
     """Build 2 fake dps.json files, run the plotter, check PNGs are produced."""
     artifact_root = tmp_path / "artifacts"
     for mode, dri in [("standard", 0.99), ("hyper_connection", 0.95)]:
-        _write_json(artifact_root / "depth_preservation" / mode / "r1" / "dps.json", {
-            "residual_mode": mode,
-            "run_id": f"{mode}-r1",
-            "dps_scores": [dri, dri - 0.01, dri - 0.02],
-            "gps_scores": [dri - 0.05, dri - 0.06, dri - 0.07],
-            "dri": dri,
-            "gpi": dri - 0.06,
-            "n_tokens": 100000,
-        })
+        _write_json(
+            artifact_root / "depth_preservation" / mode / "r1" / "dps.json",
+            {
+                "residual_mode": mode,
+                "run_id": f"{mode}-r1",
+                "dps_scores": [dri, dri - 0.01, dri - 0.02],
+                "gps_scores": [dri - 0.05, dri - 0.06, dri - 0.07],
+                "dri": dri,
+                "gpi": dri - 0.06,
+                "n_tokens": 100000,
+            },
+        )
 
     out_dir = tmp_path / "plots"
     result = subprocess.run(
-        [sys.executable, "-m", "scripts.plots.dps_curves",
-         "--artifact-root", str(artifact_root),
-         "--out", str(out_dir)],
-        capture_output=True, text=True, check=False,
+        [sys.executable, "-m", "scripts.plots.dps_curves", "--artifact-root", str(artifact_root), "--out", str(out_dir)],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
     assert (out_dir / "dps_vs_layer.png").exists()
@@ -69,10 +70,10 @@ def test_scaling_pareto(tmp_path: Path) -> None:
 
     out_dir = tmp_path / "plots"
     result = subprocess.run(
-        [sys.executable, "-m", "scripts.plots.scaling_pareto",
-         "--csv", str(csv_path), "--steps-csv", str(steps_path),
-         "--out", str(out_dir)],
-        capture_output=True, text=True, check=False,
+        [sys.executable, "-m", "scripts.plots.scaling_pareto", "--csv", str(csv_path), "--steps-csv", str(steps_path), "--out", str(out_dir)],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
     assert (out_dir / "pareto.png").exists()
@@ -93,9 +94,10 @@ def test_inference_memory(tmp_path: Path) -> None:
 
     out_dir = tmp_path / "plots"
     result = subprocess.run(
-        [sys.executable, "-m", "scripts.plots.inference_memory",
-         "--csv", str(csv_path), "--out", str(out_dir)],
-        capture_output=True, text=True, check=False,
+        [sys.executable, "-m", "scripts.plots.inference_memory", "--csv", str(csv_path), "--out", str(out_dir)],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
     assert (out_dir / "vram_vs_depth.png").exists()
@@ -123,10 +125,10 @@ def test_iso_flop(tmp_path: Path) -> None:
 
     out_dir = tmp_path / "plots"
     result = subprocess.run(
-        [sys.executable, "-m", "scripts.plots.iso_flop",
-         "--csv", str(csv_path), "--steps-csv", str(steps_path),
-         "--out", str(out_dir)],
-        capture_output=True, text=True, check=False,
+        [sys.executable, "-m", "scripts.plots.iso_flop", "--csv", str(csv_path), "--steps-csv", str(steps_path), "--out", str(out_dir)],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
     assert (out_dir / "iso_flop.png").exists()
@@ -149,9 +151,10 @@ def test_loss_curves(tmp_path: Path) -> None:
 
     out_dir = tmp_path / "plots"
     result = subprocess.run(
-        [sys.executable, "-m", "scripts.plots.loss_curves",
-         "--csv", str(steps_path), "--out", str(out_dir)],
-        capture_output=True, text=True, check=False,
+        [sys.executable, "-m", "scripts.plots.loss_curves", "--csv", str(steps_path), "--out", str(out_dir)],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
     assert (out_dir / "loss_curves.png").exists()

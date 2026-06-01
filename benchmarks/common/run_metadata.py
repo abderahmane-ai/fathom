@@ -29,10 +29,7 @@ def get_git_commit(repo_root: Path | str | None = None, short: bool = True) -> s
         short: if True, return 12-character short hash; else full 40-char hash.
     """
     try:
-        if short:
-            cmd = ["git", "rev-parse", "--short=12", "HEAD"]
-        else:
-            cmd = ["git", "rev-parse", "HEAD"]
+        cmd = ["git", "rev-parse", "--short=12", "HEAD"] if short else ["git", "rev-parse", "HEAD"]
         result = subprocess.run(
             cmd,
             cwd=str(repo_root) if repo_root else None,

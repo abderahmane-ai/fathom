@@ -8,9 +8,7 @@ from pathlib import Path
 import pytest
 
 from benchmarks.common.artifacts import (
-    benchmark_dir,
     find_all_runs,
-    run_dir,
     run_metadata_path,
     write_run_metadata,
     write_status,
