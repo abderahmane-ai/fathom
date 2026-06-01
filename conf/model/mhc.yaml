@@ -1,10 +1,19 @@
-# conf/model/mhc.yaml — mHC-Lite hyper-connection transformer
+# conf/model/mhc.yaml — Original DeepSeek mHC with Sinkhorn-Knopp
+#
+# Reference: Xie, Z. et al., "mHC: Manifold-Constrained Hyper-Connections",
+#            arXiv:2512.24880, 2025 (Eq. 19: H_res = SK(exp(...)), 20 iters).
+#
+# For the mHC-Lite variant (arXiv:2601.05732, convex combination of
+# permutation matrices), use conf/model/mhc_lite.yaml instead.
+#
 # @package model
 
 residual_mode: hyper_connection
 
 hyper_connection:
-  num_channels: 2         # m = 2 (mHC-Lite)
+  num_channels: 2         # n = 2 (only n supported in this codebase)
+  algorithm: sinkhorn_knopp
+  t_max: 20               # Sinkhorn-Knopp iterations (paper §4.2)
   use_static_input: false
   init_static_gate: 0.0   # ignored when use_static_input is false
 

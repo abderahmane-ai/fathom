@@ -1,0 +1,31 @@
+# conf/model/mhc_lite.yaml — mHC-Lite hyper-connection transformer
+#
+# Reference: Yang, Y. & Gao, J., "mHC-lite: You Don't Need 20 Sinkhorn-Knopp
+#            Iterations", arXiv:2601.05732, 2026.
+#
+# Uses convex combination of permutation matrices (Birkhoff-von Neumann) for
+# H_res instead of Sinkhorn-Knopp iterations.  For n=2 the two algorithms
+# produce equivalent doubly-stochastic 2x2 matrices, but mHC-Lite is exact
+# by construction while the original mHC is approximate after 20 iters.
+# mHC-Lite also avoids the gradient-contraction issue of the SK map.
+#
+# For the original DeepSeek mHC (arXiv:2512.24880, Sinkhorn-Knopp),
+# use conf/model/mhc.yaml instead.
+#
+# @package model
+
+residual_mode: hyper_connection
+
+hyper_connection:
+  num_channels: 2         # n = 2 (only n supported in this codebase)
+  algorithm: permutation_convex
+  use_static_input: false
+  init_static_gate: 0.0   # ignored when use_static_input is false
+
+d_model: 768
+n_heads: 12
+ff_dim: 3072
+num_layers: 12
+max_seq_len: 1024
+vocab_size: 50257
+dropout: 0.1

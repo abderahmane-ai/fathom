@@ -9,8 +9,8 @@ small-model diagnostic reference.
 
 Math (BlockAttnRes):
     values  = stack([*blocks, partial_block])        # (N+1, B, S, d)
-    keys    = RMSNorm(values)                        # normalized for bounded logits
-    logits  = einsum("d, nbsd -> nbs", pseudo_query, keys) / sqrt(d)
+    keys    = RMSNorm(values)                        # parameter-free, paper's protocol
+    logits  = einsum("d, nbsd -> nbs", pseudo_query, keys)  # no sqrt(d) — paper's formula
     weights = softmax(logits, dim=0)                 # over depth axis
     output  = einsum("nbs, nbsd -> bsd", weights, values)
 
@@ -54,7 +54,6 @@ class BlockAttnRes(nn.Module):
 
     def __init__(self, d_model: int, eps: float = 1e-6) -> None:
         super().__init__()
-        self.d_model = d_model
         self.eps = eps
         # Zero-init pseudo_query → uniform softmax → mean residual at init
         # (paper: "all pseudo-query vectors must be initialized to zero").
@@ -92,9 +91,7 @@ class BlockAttnRes(nn.Module):
 
         values: torch.Tensor = torch.stack([*blocks, partial_block], dim=0)
         keys: torch.Tensor = self._rms_norm(values)
-        logits: torch.Tensor = torch.einsum("d, n b s d -> n b s", self.pseudo_query, keys) / (
-            self.d_model**0.5
-        )
+        logits: torch.Tensor = torch.einsum("d, n b s d -> n b s", self.pseudo_query, keys)
         weights: torch.Tensor = logits.softmax(dim=0)
         return torch.einsum("n b s, n b s d -> b s d", weights, values)
 
@@ -113,7 +110,6 @@ class FullAttnRes(nn.Module):
 
     def __init__(self, d_model: int, eps: float = 1e-6) -> None:
         super().__init__()
-        self.d_model = d_model
         self.eps = eps
         # Zero-init pseudo_query → uniform softmax over all stored states at init.
         self.pseudo_query: nn.Parameter = nn.Parameter(torch.zeros(d_model))
@@ -138,6 +134,6 @@ class FullAttnRes(nn.Module):
             raise ValueError("State history must not be empty.")
         values = torch.stack(states, dim=0)
         keys = self._rms_norm(values)
-        logits = torch.einsum("d, n b s d -> n b s", self.pseudo_query, keys) / (self.d_model**0.5)
+        logits = torch.einsum("d, n b s d -> n b s", self.pseudo_query, keys)
         weights = logits.softmax(dim=0)
         return torch.einsum("n b s, n b s d -> b s d", weights, values)

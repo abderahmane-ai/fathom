@@ -13,7 +13,7 @@ The five mechanisms are not five independent ideas — they form a **design ladd
 | 0 | **Standard** | None — only the immediately previous $h$ | $O(d)$ | None |
 | 1 | **RR** (Recurrent Residual) | Single gated memory vector $m \in \mathbb{R}^{d}$ | $O(\text{rank} \cdot d)$ | None — implicit via learned gates |
 | 2 | **VEGA** (Vertical EMA Gated Attention) | Multi-head linear-attention state $(S, z)$ of size $n_h \cdot r_h$ | $O(n_h \cdot r_h \cdot d)$ | Linear-attention over depth |
-| 3 | **mHC** (Multi-Head Hyper-Connections, Lite variant) | $n$ parallel residual channels with input-dependent pre/post/residual mixing | $O(n^2 \cdot d + n \cdot d \cdot n!)$ per layer | None — orthogonal to history aggregation |
+| 3 | **mHC** (Multi-Head Hyper-Connections; SK or mHC-Lite) | $n$ parallel residual channels with input-dependent pre/post/residual mixing | $O(n^2 \cdot d + n \cdot d \cdot n^2)$ per layer (SK) or $O(n^2 \cdot d + n \cdot d \cdot n!)$ (mHC-Lite) | None — orthogonal to history aggregation |
 | 4 | **AttnRes** (Block / Full) | Full stack of previous $h$'s, softmax-weighted | $O(B \cdot d)$ per block (block variant) | Full softmax over depth |
 
 The middle three rungs (RR, VEGA, AttnRes) can be read as **three different points on the cost/expressivity frontier of "let later layers re-read earlier representations"** — RR is the cheapest and least expressive, VEGA is the sweet spot (linear-attention-style retrieval at $O(L)$ total cost), and AttnRes is the upper bound ($O(L^2)$). mHC sits orthogonally: it is not a history-aggregation scheme but a **parallel-channel mixing** scheme, included as a recently-published reference baseline.
@@ -187,78 +187,96 @@ To maximize training throughput and prevent GPU kernel launch latency bottleneck
 
 ---
 
-## 5. Multi-Head Hyper-Connections (mHC-Lite) — Rung 3
+## 5. Multi-Head Hyper-Connections (mHC) — Rung 3
 
 **References:**
-- Bian, Y., Wang, L., et al., "Multi-Head Hyper-Connections" (arXiv:2512.24880, Dec 2025).
-- Yang, Z. & Gao, X., "mHC-Lite: Doubly-Stochastic Routing via Permutation Convex Combinations" (arXiv:2601.05732, Jan 2026).
+- Xie, Z. et al., "mHC: Manifold-Constrained Hyper-Connections", DeepSeek-AI,
+  arXiv:2512.24880, 2025.  (Original mHC: H_res = SK(exp(...)) with 20
+  Sinkhorn-Knopp iterations.  This is the default in this codebase.)
+- Yang, Y. & Gao, J., "mHC-lite: You Don't Need 20 Sinkhorn-Knopp Iterations",
+  arXiv:2601.05732, 2026.  (mHC-Lite: H_res = softmax(...) · [permutations]
+  using the Birkhoff-von Neumann theorem.  Equivalent to mHC for n=2.)
 
 mHC is **not a history-aggregation scheme** — it sits orthogonally to RR / VEGA / AttnRes on the design ladder. Where the other three rungs ask *"how do we let a layer reach back into the history of previous hidden states?"*, mHC asks *"how do we let a single sublayer mix across multiple parallel residual channels?"*
 
 The mechanism: each layer carries $n$ parallel channels of residual state $H_l \in \mathbb{R}^{B \times S \times n \times d}$ instead of a single $h_l \in \mathbb{R}^{B \times S \times d}$. Before and after each sublayer, three **input-dependent** mixing tensors (computed from the input) route information between channels.
 
-### 5.1 Per-Sublayer Equations (mHC-Lite, $n=2$)
+### 5.1 Per-Sublayer Equations ($n=2$)
 
-Let $\text{RMSNorm}(H) \in \mathbb{R}^{B \times S \times n \times d}$ denote the parameter-free RMSNorm of the channel state, $\alpha_\star$ a learnable scalar temperature, and $W_\star \in \mathbb{R}^{(n \cdot d) \times k}$ a learnable projection (with $k = n$ for $H_\text{pre}, H_\text{post}$ and $k = n!$ for $H_\text{res}$). Then for each sublayer:
+Let $\text{RMSNorm}(H) \in \mathbb{R}^{B \times S \times n \cdot d}$ denote the parameter-free RMSNorm of the flattened channel state, $\alpha_\star$ a learnable scalar temperature, and $W_\star$ a learnable projection. Then for each sublayer:
 
-$$\hat{H} = \text{RMSNorm}(H_l) \qquad \text{(parameter-free, channel-wise RMSNorm)}$$
+$$\hat{H} = \text{RMSNorm}(\text{vec}(H_l)) \qquad \text{(parameter-free RMSNorm over all channels)}$$
 
-$$H_\text{pre}^{(b,s,i)} = \sigma\!\left(\alpha_\text{pre} \cdot \langle \hat{H}^{(b,s)}, W_\text{pre} \rangle + b_\text{pre}^{(i)}\right) \in \mathbb{R}^{n} \qquad \text{(pre-mix weights, sigmoid)}$$
+$$H_\text{pre}^{(b,s,i)} = \sigma\!\left(\alpha_\text{pre} \cdot \hat{H}^{(b,s)} \cdot W_\text{pre} + b_\text{pre}^{(i)}\right) \in \mathbb{R}^{n} \qquad \text{(pre-mix weights, sigmoid)}$$
 
-$$H_\text{post}^{(b,s,i)} = 2 \cdot \sigma\!\left(\alpha_\text{post} \cdot \langle \hat{H}^{(b,s)}, W_\text{post} \rangle + b_\text{post}^{(i)}\right) \in \mathbb{R}^{n} \qquad \text{(post-mix weights, $2\times$ sigmoid)}$$
+$$H_\text{post}^{(b,s,i)} = 2 \cdot \sigma\!\left(\alpha_\text{post} \cdot \hat{H}^{(b,s)} \cdot W_\text{post} + b_\text{post}^{(i)}\right) \in \mathbb{R}^{n} \qquad \text{(post-mix weights, $2\times$ sigmoid)}$$
 
-$$H_\text{res}^{(b,s)} = \text{softmax}\!\left(\alpha_\text{res} \cdot \langle \hat{H}^{(b,s)}, W_\text{res} \rangle + b_\text{res}\right) \in \mathbb{R}^{n!} \qquad \text{(residual-mix weights)}$$
+$$H_\text{res}^{(b,s)} \in \mathbb{R}^{n \times n} \qquad \text{(doubly-stochastic residual-mix matrix, algorithm-dependent — see below)}$$
 
 $$x_\text{pre} = \sum_{i} H_\text{pre}^{(i)} \cdot H_l^{(i)} \in \mathbb{R}^{d} \qquad \text{(pre-mix: blend channels → sublayer input)}$$
 
 $$y = \mathcal{F}(\text{LayerNorm}(x_\text{pre})) \qquad \text{(standard sublayer output)}$$
 
-$$H_\text{mixed} = \sum_{\pi \in S_n} H_\text{res}^{(\pi)} \cdot \pi(H_l) \in \mathbb{R}^{n \times d} \qquad \text{(residual-mix: doubly-stochastic channel carry-over)}$$
+$$H_\text{mixed} = H_\text{res} \cdot H_l \in \mathbb{R}^{n \times d} \qquad \text{(residual-mix: doubly-stochastic channel carry-over)}$$
 
 $$H_{l+1} = H_\text{mixed} + y \otimes H_\text{post} \qquad \text{(post-mix: add sublayer output back to channels)}$$
 
-For $n=2$ the only permutations are the identity $\pi_0$ and the swap $\pi_1$, so the residual-mix is the convex combination $H_\text{res}^{(0)} \cdot H + H_\text{res}^{(1)} \cdot \pi_1(H)$. The $2\times$ factor on $H_\text{post}$ is from the paper — it ensures the average y-gain is 1 at init (rather than $1/n$).
+The $2\times$ factor on $H_\text{post}$ is from the paper — it ensures the average y-gain is 1 at init (rather than $1/n$).
+
+**Algorithm choice for $H_\text{res}$** (set by `algorithm` in the config):
+
+| Algorithm | `algorithm=` | $H_\text{res}$ computation | At init | Source |
+|---|---|---|---|---|
+| Sinkhorn-Knopp | `sinkhorn_knopp` (default) | $\text{SK}\bigl(\exp\bigl(\alpha_\text{res} \cdot \text{mat}(\hat{H} W_\text{res}) + b_\text{res}\bigr)\bigr)$, 20 iters | ≈ I_2 (approximate) | arXiv:2512.24880 §4.2 Eq. 19 |
+| Permutation convex | `permutation_convex` | $\text{softmax}(\alpha_\text{res} \cdot \hat{H} W_\text{res} + b_\text{res}) \cdot [P_0, P_1]$ | = I_2 (exact) | arXiv:2601.05732 §3 Eq. 3 |
+
+For $n=2$ the two algorithms produce equivalent doubly-stochastic 2×2 matrices, but the Sinkhorn-Knopp version is approximate (does not fully converge in 20 iterations on the extreme init bias) while the permutation-convex version is exact by construction (Birkhoff-von Neumann theorem).  The SK algorithm is contracting, so its gradient through $H_\text{res}$ is geometrically small (~1e-9); the permutation-convex version has normal-sized gradients.  The mHC-Lite paper argues their approach is preferable for both reasons.
 
 ### 5.2 Approximate Zero-Start Initialization
 
 mHC's init follows the paper's bias-only protocol: all projection weights start at zero, all temperatures start at $\alpha_\star = 0.01$, and the bias vectors are set to give the desired init behavior:
 
-| Tensor | Shape | Init | Value at init |
-|--------|-------|------|---------------|
-| $W_\text{pre}, W_\text{post}, W_\text{res}$ | $(n \cdot d) \times k$ | $\mathbf{0}$ | 0 |
-| $\alpha_\text{pre}, \alpha_\text{post}, \alpha_\text{res}$ | scalar | $0.01$ | 0.01 |
-| $b_\text{pre}, b_\text{post}$ | $(1, n)$ | $+1$ on main channel, $-1$ on shadow | $[+1, -1]$ |
-| $b_\text{res}$ | $(1, n!)$ | $0$ on identity, $-8$ on swap | $[0, -8]$ |
+| Tensor | SK shape | mHC-Lite shape | Init | Value at init |
+|--------|----------|----------------|------|---------------|
+| $W_\text{pre}, W_\text{post}$ | $(n \cdot d) \times n$ | $(n \cdot d) \times n$ | $\mathbf{0}$ | 0 |
+| $W_\text{res}$ | $(n \cdot d) \times n^2$ | $(n \cdot d) \times n!$ | $\mathbf{0}$ | 0 |
+| $\alpha_\text{pre}, \alpha_\text{post}, \alpha_\text{res}$ | scalar | scalar | $0.01$ | $0.01$ |
+| $b_\text{pre}, b_\text{post}$ | $(1, n)$ | $(1, n)$ | $+1$ on main channel, $-1$ on shadow | $[+1, -1]$ |
+| $b_\text{res}$ | $(1, n, n)$ | $(1, n!)$ | $0$ on identity, $-8$ elsewhere | varies |
 
 Plugging in the bias values at init (with $W=0$, so the projections vanish):
 
 $$H_\text{pre} = \sigma([+1, -1]) \approx [0.731, 0.269] \qquad H_\text{post} = 2 \cdot \sigma([+1, -1]) \approx [1.462, 0.538]$$
 
-$$H_\text{res} = \text{softmax}([0, -8]) \approx [0.9997, 0.0003] \quad \text{so} \quad H_\text{res} \cdot H \approx I_2 \cdot H$$
+$$H_\text{res} \approx I_2 \quad \text{(mHC-Lite: exact; SK: approximate after 20 iters, max entry error ≈ 0.03)}$$
 
 This gives an **approximate** zero-start (NOT bit-for-bit, unlike the static mHC scheme that this code used to implement):
 
 - Main channel: $H_{l+1}^{(0)} \approx H_l^{(0)} + 1.462 \cdot y$ (close to a standard residual, but the y-gain is 1.462 not 1).
 - Shadow channel: $H_{l+1}^{(1)} \approx H_l^{(1)} + 0.538 \cdot y$ (passive carry-over, with a small y-leak).
 
-The strict bit-for-bit zero-start that the **static** mHC scheme provides is **not achievable with the paper's bias-only dynamic init** — it is a property of the simpler linear-mixing version, not the full mHC. The dynamic version trades strictness for the input-dependent routing the paper actually proposes. The at-init values are verified by `tests/test_design_ladder.py::test_mhc_approximate_zero_start_at_init` and `test_mhc_init_contract_at_init`.
+The strict bit-for-bit zero-start that the **static** mHC scheme provides is **not achievable with the paper's bias-only dynamic init** — it is a property of the simpler linear-mixing version, not the full mHC. The dynamic version trades strictness for the input-dependent routing the paper actually proposes. The at-init values are verified by `tests/test_design_ladder.py::test_mhc_approximate_zero_start_at_init` (SK) and `test_mhc_lite_approximate_zero_start_at_init` (mHC-Lite), plus the init-contract tests for each.
 
 ### 5.3 Parameter Overhead
 
 Per layer, the added parameters are:
 
 - $W_\text{pre}, W_\text{post} \in \mathbb{R}^{n \cdot d \times n}$: $2 n^2 d$ parameters (for $n=2$: $8d$).
-- $W_\text{res} \in \mathbb{R}^{n \cdot d \times n!}$: $n \cdot d \cdot n!$ parameters (for $n=2$: $4d$).
+- $W_\text{res}$: $n \cdot d \cdot n^2$ (SK) or $n \cdot d \cdot n!$ (mHC-Lite) parameters. For $n=2$: $4d$ (mHC-Lite) or $8d$ (SK).
 - Three learnable $\alpha_\star$ scalars: 3 parameters.
-- Three bias vectors of shape $(1, n)$: $3n$ parameters (for $n=2$: 6).
+- Three bias vectors: $3n$ (for $n=2$: 6) plus $n^2$ or $n!$ for $b_\text{res}$ (4 or 2 for $n=2$).
 
-Total per layer: $2 n^2 d + n \cdot d \cdot n! + 3n + 3$ (for $n=2$: $12d + 9$, i.e. $\sim 0.1\%$ of a 1024-dim model). The $n!$ term is why we only support $n=2$ in this project — for $n=4$ it is $24 \cdot n \cdot d$ and for $n=8$ it is $40320 \cdot n \cdot d$, out of scope. The sHC paper (arXiv:2603.20896) is the polynomial-scaling alternative for larger $n$.
+Total per layer (for $n=2$):
+- SK: $8d + 8d + 9 = 16d + 9$ → $\sim 0.16\%$ of a 1024-dim model.
+- mHC-Lite: $8d + 4d + 9 = 12d + 9$ → $\sim 0.1\%$ of a 1024-dim model.
+
+For $n=4$ the mHC-Lite $n!$ term becomes $24 \cdot n \cdot d$ and the SK $n^2$ term becomes $16 \cdot d$ — both out of scope in this codebase.  The sHC paper (arXiv:2603.20896) is the polynomial-scaling alternative for larger $n$.
 
 ### 5.4 Relation to the Design Ladder
 
 mHC is **orthogonal** to the history-aggregation rungs. It does not let a layer re-read earlier *outputs*; it lets a single sublayer *mix across* $n$ parallel residual streams. The two ideas are composable in principle (one could imagine a "mHC + AttnRes" hybrid where each of the $n$ channels uses a different history scheme), but the implementation in this project keeps them separate so each can be evaluated in isolation.
 
-In the benchmark suite, mHC is the **recently-published reference baseline** — included as the "what does the latest concurrent work propose?" comparison point, with the mHC-Lite ($n=2$) variant chosen to keep parameter overhead negligible against the model size.
+In the benchmark suite, mHC is the **recently-published reference baseline** — included as the "what does the latest concurrent work propose?" comparison point, with the $n=2$ variant chosen to keep parameter overhead negligible against the model size. Both the SK (canonical DeepSeek) and the permutation-convex (mHC-Lite) variants are exposed via `conf/model/mhc.yaml` and `conf/model/mhc_lite.yaml` respectively.
 
 ---
 
@@ -308,7 +326,7 @@ In the benchmark suite, BlockAttnRes is the **quadratic target** — what the ch
 | **Rung** | 0 | 1 | 2 | 3 | 4 |
 | **Mechanism** | Fixed addition | Gated recurrency | Linear-attention EMA | Dynamic parallel-channel mixing | Softmax over blocks |
 | **History aggregation** | None | Implicit (gates) | QKV linear-attention | None (orthogonal) | Full softmax |
-| **Complexity / sublayer** | O(d) | O(rank · d) | O(n_h · r_h · d) | O(n²·d + n·d·n!) | O(B · d) |
+| **Complexity / sublayer** | O(d) | O(rank · d) | O(n_h · r_h · d) | O(n²·d + n·d·n²) [SK] / O(n²·d + n·d·n!) [Lite] | O(B · d) |
 | **Memory / token** | O(d) | O(2d) | O(n_h · r_h²) | O(n · d) | O(B · d) |
 | **Init behavior** | N/A | 0.953·h + y | 0.953·h + y | 1.462·y[0] + 0.538·y[1] on H ≈ I (ch 0) | mean(history) |
 | **Strict zero-start** | — | soft | soft | no (paper's approximate) | no |

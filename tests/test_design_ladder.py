@@ -16,6 +16,13 @@ defined baseline.  This file codifies that contract rung by rung:
   |    3 | mhc       | H_res·H + 2·σ(±1)·y ≈ H + 1.462·y[0]+0.538·y[1] | no (paper's approximate) |
   |    4 | attnres   | mean([*blocks, partial])      | n/a (uniform mean)  |
 
+  mHC has two algorithm variants (see METHODOLOGY.md §5.2):
+  - ``algorithm="sinkhorn_knopp"`` (default) — the original DeepSeek mHC
+    paper (arXiv:2512.24880), H_res computed via 20 Sinkhorn-Knopp iterations.
+  - ``algorithm="permutation_convex"`` — the mHC-Lite variant
+    (arXiv:2601.05732), H_res computed via convex combination of permutation
+    matrices (Birkhoff-von Neumann, exact doubly-stochasticity for n=2).
+
 The parametrised summary at the bottom is a **documentation test** — it
 always passes, but its parametrise block reads as a table of the exact
 init contract each mechanism satisfies.
@@ -190,8 +197,8 @@ def test_vega_init_damp_bias_matches_documented_value() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Rung 3: mHC — paper-faithful (mHC-Lite, arXiv:2601.05732) approximate
-# zero-start
+# Rung 3: mHC — paper-faithful (DeepSeek mHC with Sinkhorn-Knopp,
+# arXiv:2512.24880, the canonical implementation) approximate zero-start
 # ─────────────────────────────────────────────────────────────────────────
 
 
@@ -201,8 +208,12 @@ def test_mhc_approximate_zero_start_at_init() -> None:
     H_res ≈ I_2.  This is **approximate** (not bit-for-bit) zero-start:
     channel 0 still gets close to a standard residual, but with a y-gain
     of 1.462 instead of 1.  See METHODOLOGY.md §5.2 for the rationale.
+
+    Uses the canonical Sinkhorn-Knopp algorithm (default) — see
+    ``test_mhc_lite_approximate_zero_start_at_init`` for the mHC-Lite
+    variant (arXiv:2601.05732).
     """
-    mhc = HyperConnection(d_model=64, num_channels=2)
+    mhc = HyperConnection(d_model=64, num_channels=2, algorithm="sinkhorn_knopp")
     H = torch.randn(2, 4, 2, 64)
     y = torch.randn(2, 4, 64)
 
@@ -217,22 +228,42 @@ def test_mhc_approximate_zero_start_at_init() -> None:
 
     # 1) H_res ≈ I_2 → H_res · H ≈ H.
     # 2) H_post ≈ [1.462, 0.538] → y_post[0] ≈ 1.462·y, y_post[1] ≈ 0.538·y.
-    # Tolerance ≈ 5e-3 absorbs the 4e-4 deviation of softmax([0, -8]) from I.
+    # Tolerance 1e-1 absorbs the larger deviation of H_res from I_2 under
+    # 20 SK iterations (compared to mHC-Lite's exact construction).
+    assert_close(H_new[..., 0, :], H[..., 0, :] + 1.4621 * y, atol=1e-1, rtol=1e-1)
+    assert_close(H_new[..., 1, :], H[..., 1, :] + 0.5379 * y, atol=1e-1, rtol=1e-1)
+
+
+def test_mhc_lite_approximate_zero_start_at_init() -> None:
+    """mHC-Lite at init: same approximate zero-start as mHC, but H_res is
+    exactly I_2 at init (no SK approximation gap).  See arXiv:2601.05732.
+    """
+    mhc = HyperConnection(d_model=64, num_channels=2, algorithm="permutation_convex")
+    H = torch.randn(2, 4, 2, 64)
+    y = torch.randn(2, 4, 64)
+    _ = mhc.pre_mix(H)
+    H_new = mhc.post_mix(H, y)
+    # mHC-Lite is exact: H_res = softmax([0,-8])·[I,swap] ≈ I_2.
     assert_close(H_new[..., 0, :], H[..., 0, :] + 1.4621 * y, atol=5e-3, rtol=5e-3)
     assert_close(H_new[..., 1, :], H[..., 1, :] + 0.5379 * y, atol=5e-3, rtol=5e-3)
 
 
 def test_mhc_init_contract_at_init() -> None:
-    """At init, the three dynamic mix matrices are fixed by the paper's
-    bias-only protocol (W=0, α=0.01).  This is what gives the
-    approximate zero-start in ``test_mhc_approximate_zero_start_at_init``.
-    """
-    mhc = HyperConnection(d_model=64, num_channels=2)
+    """At init, the dynamic mix matrices are fixed by the paper's bias-only
+    protocol (W=0, α=0.01).  This is what gives the approximate zero-start
+    in ``test_mhc_approximate_zero_start_at_init`` and its mHC-Lite sibling.
 
-    # All projection weights start at zero.
+    Verifies the SK variant (default); the mHC-Lite variant has the same
+    init for b_pre / b_post / W_pre / W_post / α_* — only b_res shape
+    differs (see test_mhc_init_contract_at_init_lite).
+    """
+    mhc = HyperConnection(d_model=64, num_channels=2, algorithm="sinkhorn_knopp")
+
+    # W_pre / W_post shape (n*d, n) = (128, 2) for d=64, n=2.
     assert torch.equal(mhc.W_pre.detach(), torch.zeros(128, 2))
     assert torch.equal(mhc.W_post.detach(), torch.zeros(128, 2))
-    assert torch.equal(mhc.W_res.detach(), torch.zeros(128, 2))
+    # W_res shape (n*d, n^2) = (128, 4) for SK.
+    assert torch.equal(mhc.W_res.detach(), torch.zeros(128, 4))
 
     # All α-gates start at 0.01 (the paper's learnable temperature).
     assert_close(mhc.alpha_pre.detach(), torch.tensor([0.01]))
@@ -245,9 +276,30 @@ def test_mhc_init_contract_at_init() -> None:
     assert_close(mhc.b_post.detach()[0, 0], torch.tensor(1.0))
     assert_close(mhc.b_post.detach()[0, 1], torch.tensor(-1.0))
 
-    # b_res = [0, -8]: 0 on the identity permutation, −8 on the swap.
-    assert_close(mhc.b_res.detach()[0, 0], torch.tensor(0.0))
-    assert_close(mhc.b_res.detach()[0, 1], torch.tensor(-8.0))
+    # b_res is a 2x2 matrix for SK: 0 at the identity-matrix [0,0] entry,
+    # −8 everywhere else.  After exp and 20 SK iterations this converges
+    # close to I_2 (the mHC paper's init intent).
+    b_res = mhc.b_res.detach()
+    assert b_res.shape == (1, 2, 2)
+    assert_close(b_res[0, 0, 0], torch.tensor(0.0))
+    assert_close(b_res[0, 0, 1], torch.tensor(-8.0))
+    assert_close(b_res[0, 1, 0], torch.tensor(-8.0))
+    assert_close(b_res[0, 1, 1], torch.tensor(-8.0))
+
+
+def test_mhc_init_contract_at_init_lite() -> None:
+    """mHC-Lite: b_res is a 2-vector (0 on identity-perm, -8 on swap),
+    instead of a 2x2 matrix like the SK variant.  All other init values
+    match the SK variant.
+    """
+    mhc = HyperConnection(d_model=64, num_channels=2, algorithm="permutation_convex")
+    # W_res shape (n*d, n!) = (128, 2) for mHC-Lite.
+    assert torch.equal(mhc.W_res.detach(), torch.zeros(128, 2))
+    # b_res is a 2-vector.
+    b_res = mhc.b_res.detach()
+    assert b_res.shape == (1, 2)
+    assert_close(b_res[0, 0], torch.tensor(0.0))
+    assert_close(b_res[0, 1], torch.tensor(-8.0))
 
 
 # ─────────────────────────────────────────────────────────────────────────
