@@ -159,6 +159,26 @@ def run_block_attnres(run_id: str, compile: bool = False) -> None:
 @app.function(
     image=image,
     gpu="A100",
+    timeout=60 * 60 * 8,
+    retries=modal.Retries(max_retries=2, backoff_coefficient=2.0, initial_delay=30.0),
+    volumes={ARTIFACT_MOUNT: artifact_volume},
+)
+def run_hyper_connection(run_id: str, compile: bool = False) -> None:
+    """Run the mHC-Lite hyper-connection depth needle benchmark.
+
+    Args:
+        run_id: Shared run id.
+        compile: Whether to compile the model.
+
+    Returns:
+        None.
+    """
+    _run_mode("hyper_connection", run_id, compile=compile)
+
+
+@app.function(
+    image=image,
+    gpu="A100",
     timeout=60 * 60 * 4,
     retries=modal.Retries(max_retries=1, backoff_coefficient=2.0, initial_delay=30.0),
     volumes={ARTIFACT_MOUNT: artifact_volume},
@@ -194,6 +214,7 @@ def main(wait: bool = False, include_full: bool = False, compile: bool = False) 
         "recurrent_residual": run_recurrent_residual.spawn(run_id, compile=compile),
         "vega": run_vega.spawn(run_id, compile=compile),
         "block_attnres": run_block_attnres.spawn(run_id, compile=compile),
+        "hyper_connection": run_hyper_connection.spawn(run_id, compile=compile),
     }
     if include_full:
         handles["full_attnres"] = run_full_attnres.spawn(run_id, compile=compile)

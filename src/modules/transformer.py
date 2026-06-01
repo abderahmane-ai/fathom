@@ -54,6 +54,7 @@ class TransformerDecoder(nn.Module):
         # Shared depth-memory cells — one instance, passed to every layer.
         self.rr_cell: RecurrentResidualCell | None = None
         self.vega_cell: VEGACell | None = None
+        self.hc_channels: int = 0
 
         if self.residual_mode == "recurrent_residual":
             rr_cfg = config.recurrent_residual
@@ -94,6 +95,9 @@ class TransformerDecoder(nn.Module):
                     f"(requested {config.num_layers})."
                 )
 
+        elif self.residual_mode == "hyper_connection":
+            self.hc_channels = int(getattr(config.hyper_connection, "num_channels", 2))
+
         self.layers: nn.ModuleList = nn.ModuleList(
             [
                 TransformerLayer(config, rr_cell=self.rr_cell, vega_cell=self.vega_cell)
@@ -124,6 +128,9 @@ class TransformerDecoder(nn.Module):
             excluded_ids.update(id(m) for m in self.rr_cell.modules())
         if self.vega_cell is not None:
             excluded_ids.update(id(m) for m in self.vega_cell.modules())
+        for layer in self.layers:
+            if hasattr(layer, "hc"):
+                excluded_ids.add(id(layer.hc))
 
         for module in self.modules():
             if id(module) in excluded_ids:
@@ -187,6 +194,12 @@ class TransformerDecoder(nn.Module):
             history: list[torch.Tensor] = [h]
             for layer in self.layers:
                 history, h = layer.forward_full_attnres(history, h)
+
+        elif self.residual_mode == "hyper_connection":
+            H = h.unsqueeze(-2).expand(-1, -1, self.hc_channels, -1).contiguous()
+            for idx, layer in enumerate(self.layers):
+                H = layer.forward_hyperconnection(H, idx)
+            h = H.select(dim=-2, index=0)
 
         else:  # standard
             for idx, layer in enumerate(self.layers):

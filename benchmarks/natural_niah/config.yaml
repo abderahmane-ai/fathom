@@ -4,6 +4,7 @@ modes:
   - recurrent_residual
   - vega
   - block_attnres
+  - hyper_connection
 
 model:
   residual_mode: standard
@@ -33,6 +34,10 @@ model:
     eps: 1.0e-5
   attnres_block:
     block_size: 2
+  hyper_connection:
+    num_channels: 2
+    use_static_input: false
+    init_static_gate: 0.0
 
 data:
   dataset_name: roneneldan/TinyStories

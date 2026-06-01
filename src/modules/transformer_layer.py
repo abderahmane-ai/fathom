@@ -20,6 +20,7 @@ import torch.nn as nn
 from .attention import Attention
 from .attnres_block import BlockAttnRes, FullAttnRes
 from .ffn import FeedForward
+from .hyper_connections import HyperConnection
 from .norm import RMSNorm
 from .recurrent_residual import RecurrentResidualCell
 from .vega import VEGACell
@@ -96,6 +97,15 @@ class TransformerLayer(nn.Module):
         elif config.residual_mode == "full_attnres":
             self.full_attn_res = FullAttnRes(config.d_model)
             self.full_ffn_res = FullAttnRes(config.d_model)
+
+        elif config.residual_mode == "hyper_connection":
+            hc_cfg = config.hyper_connection
+            self.hc = HyperConnection(
+                d_model=config.d_model,
+                num_channels=int(getattr(hc_cfg, "num_channels", 2)),
+                use_static_input=bool(getattr(hc_cfg, "use_static_input", False)),
+                init_static_gate=float(getattr(hc_cfg, "init_static_gate", 0.0)),
+            )
 
         self.residual_mode: str = config.residual_mode
 
@@ -222,3 +232,38 @@ class TransformerLayer(nn.Module):
         history = [*history, h_new]
 
         return history, h_new
+
+    # ── mHC forward ─────────────────────────────────────────────────────────
+
+    def forward_hyperconnection(
+        self,
+        H: torch.Tensor,
+        _layer_idx: int,
+    ) -> torch.Tensor:
+        """Forward pass for hyper_connection (mHC) mode.
+
+        Applies pre/post-mix around each sublayer. At init, channel 0
+        accumulates standard Pre-LN residuals while channel 1 stays at its
+        initial state (the embedding broadcast). Off-diagonal entries of
+        W_pre / W_post are learned during training to route information
+        between channels.
+
+        Args:
+            H: m-channel residual state, shape (B, S, m, d).
+            _layer_idx: 0-based layer index (unused; reserved for future
+                per-layer modulation of W_pre / W_post).
+
+        Returns:
+            New m-channel residual state of shape (B, S, m, d).
+        """
+        if self.residual_mode != "hyper_connection":
+            raise ValueError(f"forward_hyperconnection called in mode '{self.residual_mode}'.")
+
+        H_pre = self.hc.pre_mix(H)
+        x_main = H_pre.select(dim=-2, index=0)
+        y_attn = self.attn(self.ln_1(x_main))
+        H_after_attn = self.hc.post_mix(H_pre, y_attn)
+        x_mid_main = H_after_attn.select(dim=-2, index=0)
+        y_ffn = self.ffn(self.ln_2(x_mid_main))
+        H_new = self.hc.post_mix(H_after_attn, y_ffn)
+        return H_new

@@ -1,4 +1,4 @@
-"""Modal entrypoint for Inference Memory Profiling benchmark."""
+"""Modal entrypoint for Inference Memory and Latency Profiling benchmark."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ import torch
 
 from benchmarks.common.artifacts import repo_root
 from benchmarks.common.configs import config_for_mode, load_benchmark_config, make_run_id
+from benchmarks.common.inference_latency import profile_forward
 from benchmarks.common.modal_utils import (
     ARTIFACT_MOUNT,
     REMOTE_ROOT,
@@ -57,12 +58,12 @@ def _prepare_remote() -> None:
 
 @app.function(
     image=image,
-    gpu="A10G",  # Use a smaller GPU since it's just inference testing
+    gpu="A10G",
     timeout=3600,
     volumes={ARTIFACT_MOUNT: artifact_volume},
 )
 def run_memory_profile(run_id: str) -> None:
-    """Run inference memory profiling."""
+    """Profile peak activation memory and forward-pass latency across modes and depths."""
     _prepare_remote()
     from src.modules.transformer import TransformerDecoder
 
@@ -70,34 +71,44 @@ def run_memory_profile(run_id: str) -> None:
         log.warning("CUDA is not available. Script will output zeros.")
         return
 
-    modes = ["standard", "recurrent_residual", "vega", "block_attnres"]
+    modes = ["standard", "recurrent_residual", "vega", "block_attnres", "hyper_connection"]
     depths = [12, 24, 48, 96]
     seq_len = 100
+    vocab_size = 1024
 
-    results = {mode: [] for mode in modes}
+    results: dict[str, list[dict[str, float]]] = {mode: [] for mode in modes}
     base_cfg = load_benchmark_config(BENCHMARK_NAME)
 
     for mode in modes:
         for L in depths:
             log.info(f"Profiling {mode} at {L} layers...")
-
             cfg = config_for_mode(base_cfg, mode)
             cfg.model.num_layers = L
 
-            model = TransformerDecoder(cfg.model).cuda().eval()
-            x = torch.randint(0, 1000, (1, seq_len)).cuda()
-
+            model = TransformerDecoder(cfg.model)
             torch.cuda.empty_cache()
             torch.cuda.reset_peak_memory_stats()
 
-            with torch.no_grad():
-                _ = model(x)
-
-            peak_memory = torch.cuda.max_memory_allocated() / (1024**2)  # MB
-            results[mode].append({"layers": L, "peak_vram_mb": peak_memory})
-
+            latency = profile_forward(
+                model,
+                batch_size=1,
+                seq_len=seq_len,
+                vocab_size=vocab_size,
+                n_warmup=2,
+                n_runs=5,
+                device="cuda",
+            )
+            results[mode].append(
+                {
+                    "layers": L,
+                    "peak_vram_mb": latency.peak_vram_mb,
+                    "mean_latency_ms": latency.mean_ms,
+                    "p50_latency_ms": latency.p50_ms,
+                    "p99_latency_ms": latency.p99_ms,
+                    "tokens_per_second": latency.tokens_per_second,
+                }
+            )
             del model
-            del x
             torch.cuda.empty_cache()
             gc.collect()
 

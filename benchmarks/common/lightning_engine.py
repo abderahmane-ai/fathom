@@ -17,6 +17,7 @@ from omegaconf import DictConfig, OmegaConf
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 
+from benchmarks.common.activation_profile import ActivationMagnitudeTracker
 from benchmarks.common.artifacts import (
     checkpoint_dir,
     commit_modal_volume,
@@ -27,6 +28,7 @@ from benchmarks.common.artifacts import (
     run_dir,
     write_status,
 )
+from benchmarks.common.grad_norms import PerLayerGradTracker
 from benchmarks.common.metrics import ThroughputMeter, peak_cuda_memory_mb, write_json
 from benchmarks.common.param_count import assert_model_under_cap, count_parameters
 from src.data import LanguageModelDataModule
@@ -56,13 +58,26 @@ class BenchmarkModule(lightning.LightningModule):
         trainer_cfg: Optimizer and scheduler configuration.
     """
 
-    def __init__(self, model_cfg: DictConfig, trainer_cfg: DictConfig) -> None:
+    def __init__(
+        self,
+        model_cfg: DictConfig,
+        trainer_cfg: DictConfig,
+        benchmark_cfg: DictConfig | None = None,
+    ) -> None:
         super().__init__()
         self.model = TransformerDecoder(model_cfg)
         self.trainer_cfg = trainer_cfg
         self.save_hyperparameters(OmegaConf.to_container(model_cfg, resolve=True))
         # Cache VEGA cell reference before any compilation wrapping.
         self._vega_cell = getattr(self.model, "vega_cell", None)
+        # Per-layer diagnostics: created here, attached in on_fit_start so any
+        # compile / FSDP wrapping that happens between __init__ and training
+        # does not orphan the hooks.
+        self._grad_tracker: PerLayerGradTracker | None = None
+        self._act_tracker: ActivationMagnitudeTracker | None = None
+        self._track_diagnostics: bool = bool(
+            (benchmark_cfg or {}).get("track_per_layer_metrics", False)
+        )
 
     def _loss_from_batch(
         self,
@@ -152,6 +167,10 @@ class BenchmarkModule(lightning.LightningModule):
         Returns:
             Training loss.
         """
+        if self._grad_tracker is not None:
+            self._grad_tracker.begin_step()
+        if self._act_tracker is not None:
+            self._act_tracker.begin_step()
         ce_loss = self._loss_from_batch(batch)
         # Diagnostic: dump parameter stats to stdout on NaN/Inf so Modal logs capture it.
         self._check_nan_loss(ce_loss, step=self.global_step)
@@ -261,6 +280,7 @@ class BenchmarkModule(lightning.LightningModule):
         Returns:
             None.
         """
+        self._log_per_layer_metrics()
         total_norm = torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=float("inf"))
         self.log("grad/global_norm", total_norm, on_step=True, prog_bar=False)
         # Diagnostic: warn in stdout if any gradient is already NaN/Inf before clipping.
@@ -318,6 +338,45 @@ class BenchmarkModule(lightning.LightningModule):
             return
         self.log("rr/read_gate_mean", rr_cell.last_read_gate.detach(), on_step=True)
         self.log("rr/update_gate_mean", rr_cell.last_update_gate.detach(), on_step=True)
+
+    def on_fit_start(self) -> None:
+        """Attach per-layer diagnostic trackers when enabled.
+
+        Hooks are installed after the model has been compiled / FSDP-wrapped
+        so they survive any later module replacement.
+        """
+        if not self._track_diagnostics:
+            return
+        self._grad_tracker = PerLayerGradTracker(self.model)
+        self._grad_tracker.attach()
+        self._act_tracker = ActivationMagnitudeTracker(self.model)
+        self._act_tracker.attach()
+
+    def on_fit_end(self) -> None:
+        """Detach per-layer diagnostic trackers and release their hooks."""
+        if self._grad_tracker is not None:
+            self._grad_tracker.detach()
+            self._grad_tracker = None
+        if self._act_tracker is not None:
+            self._act_tracker.detach()
+            self._act_tracker = None
+
+    def _log_per_layer_metrics(self) -> None:
+        """Log aggregated per-layer gradient and activation metrics.
+
+        Called from ``on_before_optimizer_step`` so that gradient norms are
+        available but clipping has not yet modified them. Activation norms
+        are also logged here, even though they were captured during the
+        forward pass, for symmetry with the gradient logging cadence.
+        """
+        if self._grad_tracker is not None and self._grad_tracker.should_log():
+            grad_metrics = self._grad_tracker.compute_metrics()
+            for name, value in grad_metrics.items():
+                self.log(f"grad_layer/{name}", value, on_step=True, prog_bar=False)
+        if self._act_tracker is not None and self._act_tracker.should_log():
+            act_metrics = self._act_tracker.compute_metrics()
+            for name, value in act_metrics.items():
+                self.log(f"act_layer/{name}", value, on_step=True, prog_bar=False)
 
 
 class StatusCallback(Callback):
@@ -468,7 +527,7 @@ def run_benchmark(cfg: DictConfig, benchmark_name: str, residual_mode: str, run_
         torch.cuda.reset_peak_memory_stats()
 
     datamodule = build_datamodule(cfg)
-    module = BenchmarkModule(cfg.model, cfg.trainer)
+    module = BenchmarkModule(cfg.model, cfg.trainer, benchmark_cfg=cfg.benchmark)
     precision = str(cfg.trainer.get("precision", ""))
     use_compile = bool(cfg.get("compile", False))
     if use_compile and "bf16" in precision:

@@ -108,6 +108,7 @@ def main(wait: bool = False) -> None:
         "wide_shallow_std": run_wide_shallow.spawn(run_id),
         "narrow_deep_vega": run_narrow_deep.spawn(run_id, mode="vega"),
         "narrow_deep_rr": run_narrow_deep.spawn(run_id, mode="recurrent_residual"),
+        "narrow_deep_hc": run_narrow_deep.spawn(run_id, mode="hyper_connection"),
     }
     manifest = write_spawn_manifest(BENCHMARK_NAME, handles, run_id)
     print(f"Spawned {BENCHMARK_NAME} jobs with run_id={run_id}")

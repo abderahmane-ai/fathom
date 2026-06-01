@@ -184,6 +184,19 @@ def run_block_attnres_niah(lm_run_id: str) -> None:
     _run_niah_eval("block_attnres", lm_run_id)
 
 
+@app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume})
+def run_hyper_connection_niah(lm_run_id: str) -> None:
+    """Run the mHC-Lite hyper-connection NIAH evaluation.
+
+    Args:
+        lm_run_id: The LM quality run id to evaluate.
+
+    Returns:
+        None.
+    """
+    _run_niah_eval("hyper_connection", lm_run_id)
+
+
 @app.local_entrypoint()
 def main(lm_run_id: str) -> None:
     """Evaluate Natural Text NIAH on existing LM Quality checkpoints."""
@@ -192,6 +205,7 @@ def main(lm_run_id: str) -> None:
         "recurrent_residual": run_recurrent_residual_niah.spawn(lm_run_id),
         "vega": run_vega_niah.spawn(lm_run_id),
         "block_attnres": run_block_attnres_niah.spawn(lm_run_id),
+        "hyper_connection": run_hyper_connection_niah.spawn(lm_run_id),
     }
     manifest = write_spawn_manifest(BENCHMARK_NAME, handles, lm_run_id)
     print(f"Spawned {BENCHMARK_NAME} eval jobs with lm_run_id={lm_run_id}")

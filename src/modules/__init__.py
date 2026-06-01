@@ -3,6 +3,7 @@
 from .attention import Attention
 from .attnres_block import BlockAttnRes, FullAttnRes
 from .ffn import FeedForward
+from .hyper_connections import HyperConnection
 from .norm import RMSNorm
 from .recurrent_residual import RecurrentResidualCell
 from .transformer import TransformerDecoder
@@ -14,6 +15,7 @@ __all__ = [
     "BlockAttnRes",
     "FeedForward",
     "FullAttnRes",
+    "HyperConnection",
     "RecurrentResidualCell",
     "RMSNorm",
     "TransformerDecoder",

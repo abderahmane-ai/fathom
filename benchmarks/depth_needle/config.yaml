@@ -5,6 +5,7 @@ modes:
   - vega
   - block_attnres
   - full_attnres
+  - hyper_connection
 
 model:
   residual_mode: standard
@@ -36,6 +37,10 @@ model:
     block_size: 2  # 12 layers → 12 blocks
   full_attnres:
     max_layers: 24
+  hyper_connection:
+    num_channels: 2
+    use_static_input: false
+    init_static_gate: 0.0
 
 data:
   max_seq_len: 512
