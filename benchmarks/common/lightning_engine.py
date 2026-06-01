@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import time
+import traceback
 from typing import Any
 
 import lightning as lightning
@@ -26,11 +27,18 @@ from benchmarks.common.artifacts import (
     metrics_dir,
     resolve_val_check_interval,
     run_dir,
+    write_run_metadata,
     write_status,
 )
 from benchmarks.common.grad_norms import PerLayerGradTracker
+from benchmarks.common.jsonl_logger import JsonlLogger
 from benchmarks.common.metrics import ThroughputMeter, peak_cuda_memory_mb, write_json
 from benchmarks.common.param_count import assert_model_under_cap, count_parameters
+from benchmarks.common.run_metadata import (
+    capture_run_metadata,
+    log_run_banner,
+    log_run_finish,
+)
 from src.data import LanguageModelDataModule
 from src.modules import TransformerDecoder
 
@@ -512,6 +520,17 @@ def run_benchmark(cfg: DictConfig, benchmark_name: str, residual_mode: str, run_
     """
     max_params = int(cfg.benchmark.get("max_params", 60_000_000))
     params = assert_model_under_cap(cfg.model, max_params)
+    seed = int(cfg.get("seed", 42))
+    metadata = capture_run_metadata(
+        benchmark_name=benchmark_name,
+        run_id=run_id,
+        residual_mode=residual_mode,
+        config=cfg,
+        seed=seed,
+        extra={"max_params": max_params, "parameter_count": params},
+    )
+    write_run_metadata(benchmark_name, residual_mode, run_id, metadata=metadata)
+    log_run_banner(log, metadata)
     write_status(
         benchmark_name,
         residual_mode,
@@ -521,7 +540,14 @@ def run_benchmark(cfg: DictConfig, benchmark_name: str, residual_mode: str, run_
         max_params=max_params,
     )
 
-    lightning.seed_everything(int(cfg.get("seed", 42)), workers=True)
+    jsonl = JsonlLogger(
+        run_dir(benchmark_name, residual_mode, run_id) / "events.jsonl",
+        run_id=run_id,
+    )
+    jsonl.emit("run_start", benchmark_name=benchmark_name, residual_mode=residual_mode, seed=seed, parameter_count=params)
+
+    lightning.seed_everything(seed, workers=True)
+    log.info("Seeded with %d", seed)
     torch.set_float32_matmul_precision(str(cfg.trainer.get("matmul_precision", "high")))
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
@@ -607,8 +633,35 @@ def run_benchmark(cfg: DictConfig, benchmark_name: str, residual_mode: str, run_
             if k not in ("benchmark_name", "residual_mode", "run_id")
         }
         write_status(benchmark_name, residual_mode, run_id, status="completed", **status_fields)
+        write_run_metadata(
+            benchmark_name,
+            residual_mode,
+            run_id,
+            ended_at=metadata["started_at"],
+            status="completed",
+            elapsed_seconds=elapsed,
+            global_step=trainer.global_step,
+            peak_cuda_memory_mb=peak_cuda_memory_mb(),
+        )
+        jsonl.emit(
+            "run_end",
+            status="completed",
+            elapsed_seconds=elapsed,
+            global_step=trainer.global_step,
+            peak_cuda_memory_mb=peak_cuda_memory_mb(),
+        )
+        log_run_finish(
+            log,
+            status="completed",
+            elapsed_seconds=elapsed,
+            global_step=trainer.global_step,
+            peak_mem=f"{peak_cuda_memory_mb():.0f} MiB",
+            params=f"{count_parameters(module.model):,}",
+        )
         commit_modal_volume()
     except Exception as exc:
+        elapsed = time.perf_counter() - started_at
+        tb = traceback.format_exc()
         write_status(
             benchmark_name,
             residual_mode,
@@ -616,6 +669,27 @@ def run_benchmark(cfg: DictConfig, benchmark_name: str, residual_mode: str, run_
             status="failed",
             error=str(exc),
             error_type=type(exc).__name__,
+            traceback=tb,
         )
+        write_run_metadata(
+            benchmark_name,
+            residual_mode,
+            run_id,
+            status="failed",
+            error=str(exc),
+            error_type=type(exc).__name__,
+            traceback=tb,
+            elapsed_seconds=elapsed,
+        )
+        jsonl.emit(
+            "run_end",
+            status="failed",
+            elapsed_seconds=elapsed,
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        log_run_finish(log, status="failed", elapsed_seconds=elapsed, error=str(exc))
         commit_modal_volume()
         raise
+    finally:
+        jsonl.close()
