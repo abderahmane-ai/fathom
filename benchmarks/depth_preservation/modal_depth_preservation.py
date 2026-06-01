@@ -25,6 +25,8 @@ from benchmarks.common.modal_utils import (
     REMOTE_ROOT,
     VOLUME_NAME,
     modal_ignore_patterns,
+    default_retries,
+    print_run_summary,
     write_spawn_manifest,
 )
 from benchmarks.common.run_metadata import (
@@ -257,6 +259,7 @@ def _run_mode(residual_mode: str, run_id: str, compile: bool = False) -> None:
     gpu="A100",
     timeout=60 * 60 * 2,
     volumes={ARTIFACT_MOUNT: artifact_volume},
+    retries=default_retries(),
 )
 def run_standard(run_id: str, compile: bool = False) -> None:
     """Run the standard residual depth preservation benchmark.
@@ -273,6 +276,7 @@ def run_standard(run_id: str, compile: bool = False) -> None:
     gpu="A100",
     timeout=60 * 60 * 2,
     volumes={ARTIFACT_MOUNT: artifact_volume},
+    retries=default_retries(),
 )
 def run_recurrent_residual(run_id: str, compile: bool = False) -> None:
     """Run the Recurrent Residual depth preservation benchmark.
@@ -289,6 +293,7 @@ def run_recurrent_residual(run_id: str, compile: bool = False) -> None:
     gpu="A100",
     timeout=60 * 60 * 2,
     volumes={ARTIFACT_MOUNT: artifact_volume},
+    retries=default_retries(),
 )
 def run_vega(run_id: str, compile: bool = False) -> None:
     """Run the VEGA depth preservation benchmark.
@@ -308,6 +313,7 @@ def run_vega(run_id: str, compile: bool = False) -> None:
     gpu="A100",
     timeout=60 * 60 * 2,
     volumes={ARTIFACT_MOUNT: artifact_volume},
+    retries=default_retries(),
 )
 def run_block_attnres(run_id: str, compile: bool = False) -> None:
     _run_mode("block_attnres", run_id, compile=compile)
@@ -318,6 +324,7 @@ def run_block_attnres(run_id: str, compile: bool = False) -> None:
     gpu="A100",
     timeout=60 * 60 * 2,
     volumes={ARTIFACT_MOUNT: artifact_volume},
+    retries=default_retries(),
 )
 def run_hyper_connection(run_id: str, compile: bool = False) -> None:
     """Run the mHC-Lite hyper-connection depth preservation benchmark.
@@ -356,5 +363,6 @@ def main(wait: bool = False, compile: bool = False) -> None:
     print(f"Manifest: {manifest}")
     if wait:
         for mode, handle in handles.items():
-            log.info(f"Waiting for {mode}")
+            log.info("Waiting for %s", mode)
             handle.get()
+        print_run_summary(log, BENCHMARK_NAME, run_id, list(handles.keys()))

@@ -23,9 +23,12 @@ from benchmarks.common.modal_utils import (
     ARTIFACT_MOUNT,
     REMOTE_ROOT,
     VOLUME_NAME,
+    default_retries,
     modal_ignore_patterns,
+    print_run_summary,
     write_spawn_manifest,
 )
+from benchmarks.common.modal_utils import default_retries
 from benchmarks.common.run_metadata import (
     WallClock,
     capture_run_metadata,
@@ -234,27 +237,27 @@ def _run_niah_eval(mode: str, lm_run_id: str, compile: bool = False) -> None:
         raise
 
 
-@app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume})
+@app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume}, retries=default_retries())
 def run_standard_niah(lm_run_id: str, compile: bool = False) -> None:
     _run_niah_eval("standard", lm_run_id, compile=compile)
 
 
-@app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume})
+@app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume}, retries=default_retries())
 def run_recurrent_residual_niah(lm_run_id: str, compile: bool = False) -> None:
     _run_niah_eval("recurrent_residual", lm_run_id, compile=compile)
 
 
-@app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume})
+@app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume}, retries=default_retries())
 def run_vega_niah(lm_run_id: str, compile: bool = False) -> None:
     _run_niah_eval("vega", lm_run_id, compile=compile)
 
 
-@app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume})
+@app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume}, retries=default_retries())
 def run_block_attnres_niah(lm_run_id: str, compile: bool = False) -> None:
     _run_niah_eval("block_attnres", lm_run_id, compile=compile)
 
 
-@app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume})
+@app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume}, retries=default_retries())
 def run_hyper_connection_niah(lm_run_id: str, compile: bool = False) -> None:
     """Run the mHC-Lite hyper-connection NIAH evaluation.
 
@@ -269,11 +272,12 @@ def run_hyper_connection_niah(lm_run_id: str, compile: bool = False) -> None:
 
 
 @app.local_entrypoint()
-def main(lm_run_id: str, compile: bool = False) -> None:
+def main(lm_run_id: str, wait: bool = False, compile: bool = False) -> None:
     """Evaluate Natural Text NIAH on existing LM Quality checkpoints.
 
     Args:
         lm_run_id: The LM quality run id to evaluate.
+        wait: Whether to wait for remote jobs.
         compile: Whether to compile the models using torch.compile.
 
     Returns:
@@ -289,3 +293,8 @@ def main(lm_run_id: str, compile: bool = False) -> None:
     manifest = write_spawn_manifest(BENCHMARK_NAME, handles, lm_run_id)
     print(f"Spawned {BENCHMARK_NAME} eval jobs with lm_run_id={lm_run_id}")
     print(f"Manifest: {manifest}")
+    if wait:
+        for mode, handle in handles.items():
+            log.info("Waiting for %s", mode)
+            handle.get()
+        print_run_summary(log, BENCHMARK_NAME, lm_run_id, list(handles.keys()))

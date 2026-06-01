@@ -14,7 +14,9 @@ from benchmarks.common.modal_utils import (
     ARTIFACT_MOUNT,
     REMOTE_ROOT,
     VOLUME_NAME,
+    default_retries,
     modal_ignore_patterns,
+    print_run_summary,
     write_spawn_manifest,
 )
 
@@ -53,7 +55,7 @@ def _prepare_remote() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 
-@app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume})
+@app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume}, retries=default_retries())
 def run_vega_no_var_reg(run_id: str, compile: bool = False) -> None:
     """VEGA without Variance Regularization on decay."""
     _prepare_remote()
@@ -71,7 +73,7 @@ def run_vega_no_var_reg(run_id: str, compile: bool = False) -> None:
     artifact_volume.commit()
 
 
-@app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume})
+@app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume}, retries=default_retries())
 def run_vega_no_multiscale(run_id: str, compile: bool = False) -> None:
     """VEGA initialized uniformly (no multi-scale log-linear init)."""
     _prepare_remote()
@@ -89,7 +91,7 @@ def run_vega_no_multiscale(run_id: str, compile: bool = False) -> None:
     artifact_volume.commit()
 
 
-@app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume})
+@app.function(image=image, gpu="A100", timeout=3600, volumes={ARTIFACT_MOUNT: artifact_volume}, retries=default_retries())
 def run_rr_no_depth_biases(run_id: str, compile: bool = False) -> None:
     """RR without layer-specific depth biases."""
     _prepare_remote()
@@ -162,3 +164,4 @@ def main(wait: bool = False, compile: bool = False) -> None:
         for mode, handle in handles.items():
             log.info("Waiting for %s", mode)
             handle.get()
+        print_run_summary(log, BENCHMARK_NAME, run_id, list(handles.keys()))

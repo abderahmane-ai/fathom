@@ -24,7 +24,9 @@ from benchmarks.common.modal_utils import (
     ARTIFACT_MOUNT,
     REMOTE_ROOT,
     VOLUME_NAME,
+    default_retries,
     modal_ignore_patterns,
+    print_run_summary,
     write_spawn_manifest,
 )
 from benchmarks.common.run_metadata import (
@@ -72,6 +74,7 @@ def _prepare_remote() -> None:
     gpu="A10G",
     timeout=3600,
     volumes={ARTIFACT_MOUNT: artifact_volume},
+    retries=default_retries(),
 )
 def run_memory_profile(run_id: str, compile: bool = False) -> None:
     """Profile peak activation memory and forward-pass latency across modes and depths."""
@@ -216,3 +219,4 @@ def main(wait: bool = False, compile: bool = False) -> None:
         for mode, handle in handles.items():
             log.info("Waiting for %s", mode)
             handle.get()
+        print_run_summary(log, BENCHMARK_NAME, run_id, list(handles.keys()))

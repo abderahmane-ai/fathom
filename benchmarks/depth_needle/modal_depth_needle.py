@@ -15,6 +15,7 @@ from benchmarks.common.modal_utils import (
     REMOTE_ROOT,
     VOLUME_NAME,
     modal_ignore_patterns,
+    print_run_summary,
     write_spawn_manifest,
 )
 
@@ -225,3 +226,4 @@ def main(wait: bool = False, include_full: bool = False, compile: bool = False) 
         for mode, handle in handles.items():
             log.info("Waiting for %s", mode)
             handle.get()
+        print_run_summary(log, BENCHMARK_NAME, run_id, list(handles.keys()))
