@@ -30,6 +30,11 @@ benchmarks = [
     "modal>=1.4.0",
     "wandb>=0.17.0",
 ]
+reports = [
+    "matplotlib>=3.8",
+    "pandas>=2.0",
+    "tabulate>=0.9",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
