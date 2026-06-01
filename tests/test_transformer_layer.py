@@ -113,11 +113,94 @@ def test_forward_with_vega_memory_flow(config):
     assert z_state.shape == (B, S, layer.vega_cell.n_heads, layer.vega_cell.r_head)
 
 
-def test_forward_raises_for_attnres_modes(config):
-    """forward() must raise ValueError when called in block_attnres or full_attnres mode."""
-    config.residual_mode = "block_attnres"
-    config.attnres_block = {"block_size": 2}
-    layer = TransformerLayer(config)
-    x = torch.randn(2, 4, config.d_model)
-    with pytest.raises(ValueError):
-        layer(x, layer_idx=0)
+def _build_layer_for_mode(config, mode: str) -> TransformerLayer:
+    """Configure extra config fields a mode needs, then build the layer."""
+    config.residual_mode = mode
+    if mode == "block_attnres":
+        config.attnres_block = {"block_size": 2}
+    elif mode == "hyper_connection":
+        config.hyper_connection = {
+            "num_channels": 2,
+            "use_static_input": False,
+            "init_static_gate": 0.0,
+        }
+    return TransformerLayer(config)
+
+
+def _call_layer_for_mode(layer: TransformerLayer, mode: str, config):
+    """Invoke the unified layer(...) with mode-appropriate args; return the raw output."""
+    B, S, d = 2, 4, config.d_model
+    x = torch.randn(B, S, d)
+    if mode == "standard":
+        return layer(x, layer_idx=0)
+    if mode == "recurrent_residual":
+        m = layer.rr_cell.get_initial_state(B, S, device=x.device)
+        return layer(x, layer_idx=0, m=m)
+    if mode == "vega":
+        m = layer.vega_cell.get_initial_state(B, S, device=x.device)
+        return layer(x, layer_idx=0, m=m)
+    if mode == "block_attnres":
+        return layer([x], x.clone(), 0)
+    if mode == "full_attnres":
+        return layer([x], x)
+    if mode == "hyper_connection":
+        H = x.unsqueeze(-2).expand(B, S, 2, d).contiguous()
+        return layer(H, 0)
+    raise AssertionError(f"unhandled mode: {mode}")
+
+
+def _assert_mode_output_shape(out, mode: str, config) -> None:
+    """Verify the unified dispatch produced the shape the mode-specific method promises."""
+    B, S, d = 2, 4, config.d_model
+    if mode == "standard":
+        h, m = out
+        assert h.shape == (B, S, d)
+        assert m is None
+    elif mode == "recurrent_residual":
+        h, m = out
+        assert h.shape == (B, S, d)
+        assert m.shape == (B, S, d)
+    elif mode == "vega":
+        h, m = out
+        assert h.shape == (B, S, d)
+        assert m is not None  # tuple of (S_state, z_state)
+    elif mode == "block_attnres":
+        blocks, partial = out
+        assert isinstance(blocks, list)
+        assert partial.shape == (B, S, d)
+    elif mode == "full_attnres":
+        history, h_new = out
+        assert isinstance(history, list)
+        assert h_new.shape == (B, S, d)
+    elif mode == "hyper_connection":
+        assert out.shape == (B, S, 2, d)
+    else:
+        raise AssertionError(f"unhandled mode: {mode}")
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "standard",
+        "recurrent_residual",
+        "vega",
+        "block_attnres",
+        "full_attnres",
+        "hyper_connection",
+    ],
+)
+def test_forward_dispatch_routes_to_mode_specific_method_and_fires_hooks(config, mode: str) -> None:
+    """Unified forward() must dispatch to the correct mode-specific method for every
+    residual mode, and must trigger PyTorch forward hooks — the whole purpose of
+    the routing refactor (commit e9a1a41) is to make hooks fire uniformly so the
+    per-layer grad / activation trackers in benchmarks/common/ see every mode.
+    """
+    layer = _build_layer_for_mode(config, mode)
+
+    hook_calls: list[object] = []
+    layer.register_forward_hook(lambda _module, _inputs, output: hook_calls.append(output))
+
+    out = _call_layer_for_mode(layer, mode, config)
+
+    assert len(hook_calls) == 1, f"forward hook did not fire for mode '{mode}'"
+    _assert_mode_output_shape(out, mode, config)
