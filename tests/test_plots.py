@@ -130,3 +130,30 @@ def test_iso_flop(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
     assert (out_dir / "iso_flop.png").exists()
+
+
+def test_loss_curves(tmp_path: Path) -> None:
+    steps_path = tmp_path / "steps.csv"
+    rows = []
+    for mode in ["standard", "hyper_connection"]:
+        for step in [100, 200, 300, 400]:
+            train_loss = 4.0 - step * 0.001
+            val_loss = 4.1 - step * 0.001
+            grad = 1.0 / (1 + step * 0.01)
+            rows.append(f"lm_quality,{mode},r1,{step},0.0,{train_loss},{val_loss},{grad},5000.0,1e-3")
+    _write_csv(
+        steps_path,
+        "benchmark_name,residual_mode,run_id,step,epoch,train_loss,val_loss,grad_global_norm,tokens_per_second,learning_rate",
+        rows,
+    )
+
+    out_dir = tmp_path / "plots"
+    result = subprocess.run(
+        [sys.executable, "-m", "scripts.plots.loss_curves",
+         "--csv", str(steps_path), "--out", str(out_dir)],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    assert (out_dir / "loss_curves.png").exists()
+    assert (out_dir / "grad_norms.png").exists()
+    assert (out_dir / "lr_schedule.png").exists()
