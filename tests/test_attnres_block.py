@@ -47,12 +47,13 @@ class TestBlockAttnResInit:
         """With pseudo_query=0 the softmax is uniform → output = mean of inputs.
 
         This matches the paper's recommendation: zero-init → neutral start.
+        The key normalization is parameter-free RMSNorm (no learnable scale),
+        matching the paper's protocol.
         """
         block0 = torch.randn(B, S, d_model)
         partial = torch.randn(B, S, d_model)
 
-        # Zero the pseudo-query explicitly (it is already zero at init,
-        # but norm_scale may alter the keys — reset it too).
+        # Zero the pseudo-query explicitly (it is already zero at init).
         module.pseudo_query.data.zero_()
 
         out = module(blocks=[block0], partial_block=partial)

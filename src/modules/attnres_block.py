@@ -43,6 +43,10 @@ import torch.nn as nn
 class BlockAttnRes(nn.Module):
     """Gated aggregation over a sequence of completed architectural blocks.
 
+    Follows the official Attention Residuals paper (Kimi / Moonshot AI,
+    arXiv:2603.15031) §2.1: per-layer learned pseudo-query `w_l`, parameter-
+    free RMSNorm of the keys, softmax over the depth axis.
+
     Args:
         d_model: Hidden dimension.
         eps: Epsilon for the internal RMS normalization.
@@ -52,15 +56,21 @@ class BlockAttnRes(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.eps = eps
-        # Zero-init → uniform-weight average at the start.
+        # Zero-init pseudo_query → uniform softmax → mean residual at init
+        # (paper: "all pseudo-query vectors must be initialized to zero").
         self.pseudo_query: nn.Parameter = nn.Parameter(torch.zeros(d_model))
-        self.norm_scale: nn.Parameter = nn.Parameter(torch.ones(d_model))
 
     def _rms_norm(self, x: torch.Tensor) -> torch.Tensor:
+        """Parameter-free RMSNorm of the keys, matching the paper's protocol.
+
+        The paper uses an RMSNorm with no learnable scale on the keys; this
+        is the same function applied to the sublayer input, just without a
+        learned gain.
+        """
         dtype = x.dtype
         x_f32 = x.float()
         rms = torch.rsqrt(x_f32.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-        return (self.norm_scale.float() * x_f32 * rms).to(dtype)
+        return (x_f32 * rms).to(dtype)
 
     def forward(
         self,
@@ -105,14 +115,15 @@ class FullAttnRes(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.eps = eps
+        # Zero-init pseudo_query → uniform softmax over all stored states at init.
         self.pseudo_query: nn.Parameter = nn.Parameter(torch.zeros(d_model))
-        self.norm_scale: nn.Parameter = nn.Parameter(torch.ones(d_model))
 
     def _rms_norm(self, x: torch.Tensor) -> torch.Tensor:
+        """Parameter-free RMSNorm, matching the paper's protocol (no learnable scale)."""
         dtype = x.dtype
         x_f32 = x.float()
         rms = torch.rsqrt(x_f32.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-        return (self.norm_scale.float() * x_f32 * rms).to(dtype)
+        return (x_f32 * rms).to(dtype)
 
     def forward(self, states: list[torch.Tensor]) -> torch.Tensor:
         """Aggregate all previous depth states.
