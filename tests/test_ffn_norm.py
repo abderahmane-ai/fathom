@@ -54,11 +54,12 @@ class TestFeedForward:
 
     def test_gating_behavior(self, d_model):
         """If the gate projection w1 yields zero, the output must be zero."""
-        ffn = FeedForward(d_model, ff_dim=64, dropout=0.0)
+        ff_dim = 64
+        ffn = FeedForward(d_model, ff_dim=ff_dim, dropout=0.0)
 
-        # Zero out the gate weight w1
+        # Zero out the gate weight portion of the fused w1_3 linear layer
         with torch.no_grad():
-            ffn.w1.weight.zero_()
+            ffn.w1_3.weight[:ff_dim].zero_()
 
         x = torch.randn(5, d_model)
         out = ffn(x)
@@ -73,6 +74,5 @@ class TestFeedForward:
         ffn(x).sum().backward()
 
         assert x.grad is not None
-        assert ffn.w1.weight.grad is not None
-        assert ffn.w3.weight.grad is not None
+        assert ffn.w1_3.weight.grad is not None
         assert ffn.w2.weight.grad is not None
