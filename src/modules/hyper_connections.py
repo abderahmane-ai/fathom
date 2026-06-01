@@ -4,14 +4,16 @@ References
 ----------
 - Xie, Z. et al., "mHC: Manifold-Constrained Hyper-Connections", DeepSeek-AI,
   arXiv:2512.24880, 2025.  (Original mHC: H_res = SK(exp(...)) with 20
-  Sinkhorn-Knopp iterations.  This is the default in this codebase.)
+  Sinkhorn-Knopp iterations.  This is the default in this codebase.  Works
+  for any n; the paper validates n=2 and n=4.)
 - Yang, Y. & Gao, J., "mHC-lite: You Don't Need 20 Sinkhorn-Knopp Iterations",
   arXiv:2601.05732, 2026.  (mHC-Lite: H_res = softmax(...) · [permutations]
-  using the Birkhoff-von Neumann theorem.  Equivalent to mHC for n=2.)
+  using the Birkhoff-von Neumann theorem.  Only tractable for n≤2 because
+  the permutation set has size n!; for n=2 the two algorithms agree exactly.)
 
-This module implements both for ``num_channels = 2`` (the only n for which
-either algorithm is tractable in this codebase).  At init, both algorithms
-produce doubly-stochastic 2×2 matrices that are very close to I_2.
+This module implements both for any ``num_channels`` n (default 4, the paper's
+production choice).  At init, both algorithms produce doubly-stochastic
+n×n matrices that converge to I_n.
 
 The full layer update is
 
@@ -31,13 +33,17 @@ for permutation-convex):
     - α_pre, α_post, α_res = 0.01
     - b_pre: −1 in all entries except the main-channel entry (index 0) = +1
     - b_post: same structure as b_pre
-    - b_res: −8 in all entries except the identity-permutation / identity-matrix
-      entry = 0 (so SK / softmax concentrates on the identity)
+    - b_res (SK): −8 in all entries except the diagonal (identity-matrix
+      entries) = 0.  This biases H_res toward I_n at init.
+    - b_res (permutation_convex): −8 in all entries except the identity-
+      permutation entry (index 0) = 0.
 
-At init (n=2):
-    H_pre  ≈ [σ(+1), σ(−1)]      ≈ [0.731, 0.269]
-    H_post ≈ 2·[σ(+1), σ(−1)]    ≈ [1.462, 0.538]
-    H_res  ≈ I_2                  (permutation_convex is exact; SK is approximate after 20 iters)
+At init:
+    H_pre  ≈ [σ(+1), σ(−1), σ(−1), …]   (main channel 0.731, others 0.269)
+    H_post ≈ 2·H_pre                     (main channel 1.462, others 0.538)
+    H_res  ≈ I_n                         (permutation_convex is exact;
+                                          SK is exact when the diagonal bias
+                                          zero dominates the off-diagonal −8)
 
 This is an **approximate** zero-start: not bit-for-bit standard residual,
 but the closest the papers' init protocols get.  See METHODOLOGY.md §5.2
@@ -68,12 +74,12 @@ class HyperConnection(nn.Module):
     Args:
         d_model: Hidden dimension of each channel.
         num_channels: n — the number of parallel residual channels.
-            Only n=2 is supported.  mHC's W_res has shape (n*d, n^2), so
-            for n=2 it is (2d, 4); mHC-Lite's W_res has shape (n*d, n!),
-            so for n=2 it is (2d, 2).  For n≥4 the SK approach becomes
-            expensive (W_res size grows as n^2) and the permutation-convex
-            approach becomes infeasible (n! grows factorially).  See the
-            sHC paper (arXiv:2603.20896) for the polynomial alternative.
+            The original mHC paper validates n=2 and n=4 (their 3B/9B/27B
+            models all use n=4).  For ``algorithm="sinkhorn_knopp"`` any
+            n is supported.  For ``algorithm="permutation_convex"`` only
+            n≤2 is tractable because the W_res matrix has shape (n·d, n!)
+            — n! blows up factorially.  See the sHC paper (arXiv:2603.20896)
+            for the polynomial alternative.
         algorithm: One of ``"sinkhorn_knopp"`` (default — the original
             DeepSeek mHC, Eq. 19 of the paper) or
             ``"permutation_convex"`` (mHC-Lite, Eq. 3 of the Yang & Gao
@@ -101,15 +107,27 @@ class HyperConnection(nn.Module):
         init_static_gate: float = 0.0,
     ) -> None:
         super().__init__()
-        if num_channels != 2:
-            raise NotImplementedError(
-                f"mHC in this codebase only supports num_channels=2 "
-                f"(got {num_channels}).  mHC's W_res grows as n*d*n^2 and "
-                f"mHC-Lite's W_res grows as n*d*n!; both are intractable "
-                f"for n > 2.  See arXiv:2603.20896 for the sHC alternative."
+        if num_channels < 2:
+            raise ValueError(
+                f"num_channels must be >= 2 for a residual stream to make sense "
+                f"(got {num_channels}).  Use the standard residual for n=1."
             )
         if algorithm not in self.ALGORITHMS:
             raise ValueError(f"Unknown algorithm '{algorithm}'.  Must be one of {self.ALGORITHMS}.")
+        if algorithm == "permutation_convex" and num_channels > 2:
+            # n! blows up factorially: 2→2, 3→6, 4→24, 5→120, ...
+            # W_res shape is (n*d, n!) — for n=4, d=512 that's 49K params per
+            # layer just for the res-mix projection.  The mHC-Lite paper itself
+            # notes this blowup as the motivation for sHC.
+            import math
+
+            raise NotImplementedError(
+                f"permutation_convex (mHC-Lite) is intractable for n>2 because "
+                f"n!={math.factorial(num_channels)} makes W_res a (n*d, n!) = "
+                f"({num_channels}*{d_model}, {math.factorial(num_channels)}) matrix. "
+                f"Use algorithm='sinkhorn_knopp' for n={num_channels}, or see "
+                f"arXiv:2603.20896 for the sHC polynomial alternative."
+            )
         if use_static_input:
             raise NotImplementedError(
                 "use_static_input=True is not supported in this implementation; "
@@ -153,14 +171,19 @@ class HyperConnection(nn.Module):
         self.b_post = nn.Parameter(b_post)
 
         # b_res shape depends on the algorithm:
-        #   sinkhorn_knopp:    (1, n, n)   — 2×2 matrix, identity = 0, off-diag = −8
-        #   permutation_convex: (1, n!)    — for n=2, 2-vector, identity-perm = 0, swap = −8
+        #   sinkhorn_knopp:    (1, n, n)   — diagonal (identity-matrix entries) = 0, off-diag = −8
+        #   permutation_convex: (1, n!)    — identity-permutation entry (idx 0) = 0, rest = −8
         if algorithm == "sinkhorn_knopp":
             b_res = torch.full((1, num_channels, num_channels), -8.0)
-            b_res[0, 0, 0] = 0.0  # identity-matrix top-left entry
+            # Paper §4.2: "0 in the identity-matrix entry, -8 elsewhere"
+            # — the identity matrix has 1s on the diagonal, so the
+            # "identity-matrix entries" of the bias are the diagonal.
+            eye_mask = torch.eye(num_channels, dtype=torch.bool)
+            b_res[0][eye_mask] = 0.0
         else:
+            # permutation_convex only supports n=2 (enforced above), so n! = 2.
             b_res = torch.full((1, 2), -8.0)
-            b_res[0, 0] = 0.0  # identity-permutation entry
+            b_res[0, 0] = 0.0  # identity-permutation entry (the 0th of n! permutations)
         self.b_res = nn.Parameter(b_res)
 
         # RMSNorm for the input (parameter-free, matching the mHC paper).
@@ -171,18 +194,19 @@ class HyperConnection(nn.Module):
         # the parameter-free behavior is the init point.
         self.norm = RMSNorm(in_dim, eps=1e-6)
 
-        # Pre-compute the 2! = 2 permutation matrices of 2×2 (used by the
-        # permutation_convex algorithm only):
-        #   P_0 = I_2,  P_1 = swap
-        # For n=2, applying H_res = a_0·I + a_1·swap to a tensor of shape
-        # (..., n, d) is just a convex combination of the tensor and its
-        # channel-flipped version.
-        self.register_buffer(
-            "permutations",
-            torch.tensor(
-                [[[1.0, 0.0], [0.0, 1.0]], [[0.0, 1.0], [1.0, 0.0]]],
-            ),
-        )
+        # Pre-compute the n! permutation matrices of n×n (used by the
+        # permutation_convex algorithm only).  Only constructed for n≤2 in
+        # this codebase (the constructor forbids n>2 for permutation_convex);
+        # the code below is generic so it would work for n=3 (6 perms) or
+        # n=4 (24 perms) if that restriction were ever lifted.
+        import itertools
+
+        perms = list(itertools.permutations(range(num_channels)))
+        perm_matrices = torch.zeros(len(perms), num_channels, num_channels)
+        for k, perm in enumerate(perms):
+            for i, j in enumerate(perm):
+                perm_matrices[k, i, j] = 1.0
+        self.register_buffer("permutations", perm_matrices)
 
         # Cached normalized input (set in pre_mix, used in post_mix).
         # We don't register this as a buffer because it's recomputed every

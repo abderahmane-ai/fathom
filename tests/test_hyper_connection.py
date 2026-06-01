@@ -21,8 +21,18 @@ from src.modules.hyper_connections import HyperConnection
 
 class TestHyperConnectionInit:
     def test_invalid_num_channels_raises(self) -> None:
-        with pytest.raises(NotImplementedError, match="num_channels=2"):
-            HyperConnection(32, num_channels=4)
+        # permutation_convex is n! blowup — must raise for n=4
+        with pytest.raises(NotImplementedError, match="permutation_convex"):
+            HyperConnection(32, num_channels=4, algorithm="permutation_convex")
+
+    def test_num_channels_lt_2_raises(self) -> None:
+        with pytest.raises(ValueError, match="num_channels"):
+            HyperConnection(32, num_channels=1)
+
+    def test_n_4_sinkhorn_knopp_is_allowed(self) -> None:
+        # n=4 is the paper's production choice (3B/9B/27B models).  Must succeed.
+        hc = HyperConnection(d_model=8, num_channels=4, algorithm="sinkhorn_knopp")
+        assert hc.num_channels == 4
 
     def test_invalid_algorithm_raises(self) -> None:
         with pytest.raises(ValueError, match="algorithm"):
@@ -73,14 +83,18 @@ class TestHyperConnectionInit:
         assert_close(b_post[0, 0], torch.tensor(1.0))
 
     def test_b_res_init_sinkhorn_knopp(self) -> None:
-        """SK: b_res is a 2x2 matrix — 0 at identity position, -8 elsewhere."""
+        """SK: b_res is a 2x2 matrix with diagonal = 0 (identity-matrix
+        entries) and off-diagonal = -8.  This biases H_res toward I_n at init.
+        """
         hc = HyperConnection(d_model=8, num_channels=2, algorithm="sinkhorn_knopp")
         b_res = hc.b_res.detach()
         assert b_res.shape == (1, 2, 2)
+        # Diagonal: 0 (the identity matrix has 1s on the diagonal)
         assert_close(b_res[0, 0, 0], torch.tensor(0.0))
+        assert_close(b_res[0, 1, 1], torch.tensor(0.0))
+        # Off-diagonal: -8
         assert_close(b_res[0, 0, 1], torch.tensor(-8.0))
         assert_close(b_res[0, 1, 0], torch.tensor(-8.0))
-        assert_close(b_res[0, 1, 1], torch.tensor(-8.0))
 
     def test_b_res_init_permutation_convex(self) -> None:
         """mHC-Lite: b_res is a 2-vector — 0 at identity-perm entry, -8 at swap entry."""
@@ -130,10 +144,9 @@ class TestHyperConnectionAtInit:
 
     def test_h_res_init_sinkhorn_knopp_is_doubly_stochastic(self) -> None:
         """After 20 SK iterations on exp(b_res_init), H_res is approximately
-        doubly-stochastic (rows ≈ 1, cols ≈ 1, all entries ≥ 0).  20 SK
-        iterations on the extreme init bias [[0, -8], [-8, -8]] does NOT
-        fully converge — this is the 'SK approximation gap' that the
-        mHC-Lite paper (arXiv:2601.05732) calls out as a limitation.
+        doubly-stochastic (rows ≈ 1, cols ≈ 1, all entries ≥ 0).  With the
+        symmetric init bias [[0, -8], [-8, 0]] (diagonal = 0), convergence
+        is very close to I_2 within 20 iters.
         """
         hc = HyperConnection(d_model=8, num_channels=2, algorithm="sinkhorn_knopp", t_max=20)
         H = torch.zeros(1, 1, 2, 8)
@@ -141,10 +154,9 @@ class TestHyperConnectionAtInit:
         H_res = hc._compute_H_res(hc._cached_norm)  # (1, 1, 2, 2)
         row_sums = H_res.sum(dim=-1)  # (1, 1, 2)
         col_sums = H_res.sum(dim=-2)  # (1, 1, 2)
-        # 20 SK iterations get close but not exact.  Tolerance 0.05 is the
-        # practical accuracy reported in the mHC-Lite paper.
-        assert_close(row_sums, torch.ones_like(row_sums), atol=5e-2, rtol=5e-2)
-        assert_close(col_sums, torch.ones_like(col_sums), atol=5e-2, rtol=5e-2)
+        # With symmetric b_res, 20 SK iters converge to ~3.4e-4 off-identity
+        assert_close(row_sums, torch.ones_like(row_sums), atol=1e-3, rtol=1e-3)
+        assert_close(col_sums, torch.ones_like(col_sums), atol=1e-3, rtol=1e-3)
         assert (H_res >= 0).all()
 
     def test_h_res_init_permutation_convex_is_doubly_stochastic(self) -> None:
@@ -162,14 +174,14 @@ class TestHyperConnectionAtInit:
 
     @pytest.mark.parametrize("algorithm", ["sinkhorn_knopp", "permutation_convex"])
     def test_h_res_init_approximates_identity_2x2(self, algorithm: str) -> None:
-        """At init, H_res ≈ I_2 (but not exactly — see atol)."""
+        """At init, H_res ≈ I_2 (within tolerance)."""
         hc = HyperConnection(d_model=8, num_channels=2, algorithm=algorithm)
         H = torch.zeros(1, 1, 2, 8)
         _ = hc.pre_mix(H)
         H_res = hc._compute_H_res(hc._cached_norm)  # (1, 1, 2, 2)
         # mHC-Lite is exact: H_res = softmax([0,-8])·[I,swap] ≈ I_2
-        # SK is approximate after 20 iterations but should be very close
-        assert_close(H_res[0, 0], torch.eye(2), atol=5e-2, rtol=5e-2)
+        # SK converges to ~3.4e-4 off-identity with the symmetric b_res
+        assert_close(H_res[0, 0], torch.eye(2), atol=5e-3, rtol=5e-3)
 
     @pytest.mark.parametrize("algorithm", ["sinkhorn_knopp", "permutation_convex"])
     def test_post_mix_init_reduces_to_approximate_standard_residual(self, algorithm: str) -> None:
@@ -514,3 +526,151 @@ class TestSinkhornKnoppSpec:
         assert torch.isfinite(H_res).all(), (
             "H_res should be finite under fp16 with max-subtract trick"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# n=4 support — the paper's production choice.  At n=4 the Sinkhorn-Knopp
+# manifold constraint is non-trivial (9-dimensional, not 1-dimensional as
+# at n=2), which is where mHC's contribution actually matters.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TestHyperConnectionN4:
+    """n=4 is the paper's production choice — 3B/9B/27B models all use it.
+
+    At n=2, every doubly-stochastic matrix is a convex combination of the
+    two permutations, so the SK projection is degenerate.  At n=4, the
+    Birkhoff polytope has dimension 9 and the constraint is non-trivial.
+    """
+
+    def test_w_pre_post_shapes_n4(self) -> None:
+        hc = HyperConnection(d_model=8, num_channels=4, algorithm="sinkhorn_knopp")
+        assert hc.W_pre.shape == (32, 4)  # (n*d, n) = (4*8, 4)
+        assert hc.W_post.shape == (32, 4)
+
+    def test_w_res_shape_sinkhorn_knopp_n4(self) -> None:
+        """SK at n=4: W_res shape (n*d, n^2) = (4d, 16)."""
+        hc = HyperConnection(d_model=8, num_channels=4, algorithm="sinkhorn_knopp")
+        assert hc.W_res.shape == (32, 16)
+
+    def test_b_pre_n4(self) -> None:
+        """b_pre = [+1, -1, -1, -1] — main channel 0, others -1."""
+        hc = HyperConnection(d_model=8, num_channels=4, algorithm="sinkhorn_knopp")
+        b_pre = hc.b_pre.detach()
+        assert b_pre.shape == (1, 4)
+        assert_close(b_pre[0, 0], torch.tensor(1.0))
+        for i in range(1, 4):
+            assert_close(b_pre[0, i], torch.tensor(-1.0))
+
+    def test_b_res_n4_diagonal_is_zero_offdiag_is_minus_8(self) -> None:
+        """At n=4, the identity matrix is 4×4 with diagonal = 1, so the
+        'identity-matrix entries' of b_res are the diagonal — all four must
+        be 0, all 12 off-diagonal entries must be -8.
+        """
+        hc = HyperConnection(d_model=8, num_channels=4, algorithm="sinkhorn_knopp")
+        b_res = hc.b_res.detach()
+        assert b_res.shape == (1, 4, 4)
+        # Diagonal: 0
+        for i in range(4):
+            assert_close(b_res[0, i, i], torch.tensor(0.0))
+        # Off-diagonal: -8
+        for i in range(4):
+            for j in range(4):
+                if i != j:
+                    assert_close(b_res[0, i, j], torch.tensor(-8.0))
+
+    def test_h_pre_at_init_n4(self) -> None:
+        """At init (W=0, α=0.01, b_pre=[+1,-1,-1,-1]):
+        H_pre = σ(b_pre) ≈ [0.731, 0.269, 0.269, 0.269].
+        """
+        hc = HyperConnection(d_model=8, num_channels=4, algorithm="sinkhorn_knopp")
+        H_pre_analytic = torch.sigmoid(hc.b_pre.detach())
+        assert_close(H_pre_analytic[0, 0], torch.tensor(0.7311), atol=1e-3, rtol=1e-3)
+        for i in range(1, 4):
+            assert_close(H_pre_analytic[0, i], torch.tensor(0.2689), atol=1e-3, rtol=1e-3)
+
+    def test_h_post_at_init_n4(self) -> None:
+        """At init: H_post = 2·σ(b_post) ≈ [1.462, 0.538, 0.538, 0.538]."""
+        hc = HyperConnection(d_model=8, num_channels=4, algorithm="sinkhorn_knopp")
+        H_post_analytic = 2.0 * torch.sigmoid(hc.b_post.detach())
+        assert_close(H_post_analytic[0, 0], torch.tensor(1.4621), atol=1e-3, rtol=1e-3)
+        for i in range(1, 4):
+            assert_close(H_post_analytic[0, i], torch.tensor(0.5379), atol=1e-3, rtol=1e-3)
+
+    def test_h_res_at_init_n4_is_doubly_stochastic(self) -> None:
+        """At n=4 with the symmetric b_res (diagonal = 0), 20 SK iters
+        converge very close to I_4 — doubly-stochastic to within tolerance.
+        """
+        hc = HyperConnection(d_model=8, num_channels=4, algorithm="sinkhorn_knopp", t_max=20)
+        H = torch.zeros(1, 1, 4, 8)
+        hc.pre_mix(H)
+        H_res = hc._compute_H_res(hc._cached_norm)  # (1, 1, 4, 4)
+        assert H_res.shape == (1, 1, 4, 4)
+        row_sums = H_res.sum(dim=-1)
+        col_sums = H_res.sum(dim=-2)
+        assert_close(row_sums, torch.ones_like(row_sums), atol=5e-3, rtol=5e-3)
+        assert_close(col_sums, torch.ones_like(col_sums), atol=5e-3, rtol=5e-3)
+        assert (H_res >= 0).all()
+
+    def test_h_res_at_init_n4_approximates_identity(self) -> None:
+        """H_res ≈ I_4 at init (diagonals ≈ 1, off-diagonals ≈ 0)."""
+        hc = HyperConnection(d_model=8, num_channels=4, algorithm="sinkhorn_knopp", t_max=20)
+        H = torch.zeros(1, 1, 4, 8)
+        hc.pre_mix(H)
+        H_res = hc._compute_H_res(hc._cached_norm)
+        assert_close(H_res[0, 0], torch.eye(4), atol=5e-3, rtol=5e-3)
+
+    def test_h_res_matches_reference_n4(self) -> None:
+        """Bit-level agreement with the reference SK spec at n=4."""
+        torch.manual_seed(42)
+        hc = HyperConnection(d_model=8, num_channels=4, algorithm="sinkhorn_knopp", t_max=20)
+        H = torch.randn(2, 4, 4, 8)
+        hc.pre_mix(H)
+        with torch.no_grad():
+            hc.W_res.normal_(mean=0.0, std=0.3)  # non-trivial logits
+
+        logits = _build_h_res_input(hc)
+        logits_shifted = logits - logits.max(dim=-1, keepdim=True).values
+        M_expected = _reference_sinkhorn_knopp(logits_shifted.float().exp(), iters=20)
+        H_res_ours = hc._sinkhorn_knopp_res(hc._cached_norm)
+        assert_close(H_res_ours.float(), M_expected, atol=1e-6, rtol=1e-5)
+
+    def test_h_res_doubly_stochastic_under_random_perturbation_n4(self) -> None:
+        """After large random W_res perturbation, H_res stays doubly-stochastic."""
+        torch.manual_seed(7)
+        hc = HyperConnection(d_model=8, num_channels=4, algorithm="sinkhorn_knopp", t_max=20)
+        H = torch.randn(2, 4, 4, 8)
+        hc.pre_mix(H)
+        with torch.no_grad():
+            hc.W_res.normal_(mean=0.0, std=1.0)
+        H_res = hc._sinkhorn_knopp_res(hc._cached_norm)
+        row_sums = H_res.sum(dim=-1)
+        col_sums = H_res.sum(dim=-2)
+        assert_close(row_sums, torch.ones_like(row_sums), atol=5e-2, rtol=5e-2)
+        assert_close(col_sums, torch.ones_like(col_sums), atol=5e-2, rtol=5e-2)
+        assert (H_res >= 0).all()
+
+    def test_permutation_convex_raises_for_n4(self) -> None:
+        """n! = 24 makes permutation_convex intractable at n=4."""
+        with pytest.raises(NotImplementedError, match="n!"):
+            HyperConnection(d_model=8, num_channels=4, algorithm="permutation_convex")
+
+    def test_full_forward_backward_n4(self) -> None:
+        """End-to-end forward + backward at n=4 produces finite loss and grads."""
+        torch.manual_seed(0)
+        hc = HyperConnection(d_model=8, num_channels=4, algorithm="sinkhorn_knopp", t_max=20)
+        H = torch.randn(2, 4, 4, 8, requires_grad=True)
+        x_pre = hc.pre_mix(H)
+        y = torch.randn(2, 4, 8, requires_grad=True)
+        H_new = hc.post_mix(H, y)
+        assert x_pre.shape == (2, 4, 8)
+        assert H_new.shape == (2, 4, 4, 8)
+        loss = H_new.float().sum() + x_pre.float().sum()
+        loss.backward()
+        # W_pre, W_post, W_res all get gradients
+        assert torch.isfinite(hc.W_pre.grad).all()
+        assert torch.isfinite(hc.W_post.grad).all()
+        assert torch.isfinite(hc.W_res.grad).all()
+        assert torch.isfinite(hc.alpha_pre.grad).all()
+        assert torch.isfinite(hc.alpha_post.grad).all()
+        assert torch.isfinite(hc.alpha_res.grad).all()

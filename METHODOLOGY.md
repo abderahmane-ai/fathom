@@ -270,13 +270,21 @@ Total per layer (for $n=2$):
 - SK: $8d + 8d + 9 = 16d + 9$ → $\sim 0.16\%$ of a 1024-dim model.
 - mHC-Lite: $8d + 4d + 9 = 12d + 9$ → $\sim 0.1\%$ of a 1024-dim model.
 
-For $n=4$ the mHC-Lite $n!$ term becomes $24 \cdot n \cdot d$ and the SK $n^2$ term becomes $16 \cdot d$ — both out of scope in this codebase.  The sHC paper (arXiv:2603.20896) is the polynomial-scaling alternative for larger $n$.
+For $n=4$:
+- **SK is supported** (this is the paper's production choice for 3B/9B/27B models).
+  - W_pre, W_post: $2 n^2 d = 32d$
+  - W_res: $n \cdot d \cdot n^2 = 64d$
+  - Biases + αs: $3n + n^2 + 3 = 31$
+  - **Total per layer: $96d + 31$** → $\sim 0.1\%$ of a 1024-dim model.  At d=4096 (paper's 27B): $\sim 393K$ extra params/layer, 0.024% of the $\sim 1.6B$ transformer params.
+- **mHC-Lite is not supported** because $n! = 24$ makes the W_res projection intractable ($4d \cdot 24 = 96d$ just for the res-mix, same scale as SK, but with 24 permutation matrices stored).  The constructor raises `NotImplementedError` for `algorithm="permutation_convex", num_channels>=3`.  The sHC paper (arXiv:2603.20896) is the polynomial-scaling alternative for larger $n$.
+
+The codebase supports both `num_channels=2` and `num_channels=4` for SK (the default in `conf/model/mhc.yaml` is `num_channels=2` for backward compatibility; set to 4 to match the paper's production choice).
 
 ### 5.4 Relation to the Design Ladder
 
 mHC is **orthogonal** to the history-aggregation rungs. It does not let a layer re-read earlier *outputs*; it lets a single sublayer *mix across* $n$ parallel residual streams. The two ideas are composable in principle (one could imagine a "mHC + AttnRes" hybrid where each of the $n$ channels uses a different history scheme), but the implementation in this project keeps them separate so each can be evaluated in isolation.
 
-In the benchmark suite, mHC is the **recently-published reference baseline** — included as the "what does the latest concurrent work propose?" comparison point, with the $n=2$ variant chosen to keep parameter overhead negligible against the model size. Both the SK (canonical DeepSeek) and the permutation-convex (mHC-Lite) variants are exposed via `conf/model/mhc.yaml` and `conf/model/mhc_lite.yaml` respectively.
+In the benchmark suite, mHC is the **recently-published reference baseline** — included as the "what does the latest concurrent work propose?" comparison point. The SK (canonical DeepSeek) variant supports both $n=2$ and $n=4$ (the paper's production choice); the permutation-convex (mHC-Lite) variant is $n=2$ only because of the $n!$ blowup. Both are exposed via `conf/model/mhc.yaml` and `conf/model/mhc_lite.yaml` respectively.
 
 ---
 

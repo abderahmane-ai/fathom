@@ -276,15 +276,14 @@ def test_mhc_init_contract_at_init() -> None:
     assert_close(mhc.b_post.detach()[0, 0], torch.tensor(1.0))
     assert_close(mhc.b_post.detach()[0, 1], torch.tensor(-1.0))
 
-    # b_res is a 2x2 matrix for SK: 0 at the identity-matrix [0,0] entry,
-    # −8 everywhere else.  After exp and 20 SK iterations this converges
-    # close to I_2 (the mHC paper's init intent).
+    # b_res is a 2x2 matrix for SK: 0 on the diagonal (identity-matrix
+    # entries — the identity 2x2 has 1s on the diagonal), -8 off-diagonal.
     b_res = mhc.b_res.detach()
     assert b_res.shape == (1, 2, 2)
     assert_close(b_res[0, 0, 0], torch.tensor(0.0))
+    assert_close(b_res[0, 1, 1], torch.tensor(0.0))
     assert_close(b_res[0, 0, 1], torch.tensor(-8.0))
     assert_close(b_res[0, 1, 0], torch.tensor(-8.0))
-    assert_close(b_res[0, 1, 1], torch.tensor(-8.0))
 
 
 def test_mhc_init_contract_at_init_lite() -> None:
