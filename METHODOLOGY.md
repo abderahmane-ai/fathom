@@ -51,7 +51,7 @@ $$\mathbf{r}_l = \sigma(\mathbf{W}_r \mathbf{y}_l + \mathbf{p}_r[l])$$
 $$\mathbf{d}_l = \sigma(\mathbf{W}_d \mathbf{y}_l + \mathbf{p}_d[l])$$
 
 **Hidden state update**:
-$$\mathbf{h}_l = \mathbf{d}_l \odot \mathbf{h}_{l-1} + \mathbf{y}_l + \mathbf{r}_l \odot (\mathbf{g}_m \odot \text{RMSNorm}(\mathbf{m}_{l-1}))$$
+$$\mathbf{h}_l = \mathbf{d}_l \odot \mathbf{h}_{l-1} + \mathbf{y}_l + \mathbf{r}_l \odot (\mathbf{g}_m \odot \mathbf{W}_{\text{out}}(\text{RMSNorm}(\mathbf{m}_{l-1})))$$
 
 **Forget gate** (how much of the old memory to retain):
 $$\mathbf{f}_l = \sigma(\mathbf{W}_f \text{RMSNorm}(\mathbf{m}_{l-1}) + \mathbf{p}_f[l])$$
@@ -133,8 +133,8 @@ $$c_\text{out} = \mathbf{W}_\text{out}(\text{RMSNorm}(c))$$
 
 Using a single low-rank read gate $\mathbf{r}$ and element-wise damp gate $\boldsymbol{\delta}$:
 
-$$\mathbf{r} = \sigma(\mathbf{W}_\text{up} (\mathbf{W}_\text{down} \mathbf{y})), \quad \boldsymbol{\delta} =
-\sigma(\mathbf{w}_d \odot \mathbf{y} + \mathbf{b}_d)$$
+$$\mathbf{r} = \sigma(\mathbf{W}_\text{up} (\mathbf{W}_\text{down} \text{RMSNorm}(\mathbf{y}))), \quad \boldsymbol{\delta} =
+\sigma(\mathbf{w}_d \odot \text{RMSNorm}(\mathbf{y}) + \mathbf{b}_d)$$
 
 $$\mathbf{h}_\text{new} = \boldsymbol{\delta} \odot \mathbf{h}_\text{prev} +
 \mathbf{y} + \mathbf{r} \odot c_\text{out}$$
@@ -162,7 +162,7 @@ enters the state.
 - Decay gates initialized log-linearly in a continuous spectrum from $0.0$ to $4.5$ across
   all channels.
 - Variance regularization is added to the training objective to prevent decay spectrum collapse
-  to a uniform value: $\mathcal{L}_\text{reg} = -0.01 \cdot \text{Var}(\boldsymbol{\alpha})$.
+  to a uniform value: $\mathcal{L}_\text{reg} = -0.001 \cdot \text{Var}(\boldsymbol{\alpha})$.
 - Output projection $\mathbf{W}_\text{out}$ is zero-initialized → at init the retrieved
   $c_\text{out}$ is zero, so VEGA produces $h_l \approx 0.953 \cdot h_{l-1} + y_l$ — the same
   soft zero-start as RR (verified by `tests/test_design_ladder.py::test_vega_zero_start_at_init`).

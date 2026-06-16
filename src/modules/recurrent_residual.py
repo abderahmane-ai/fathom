@@ -223,8 +223,8 @@ class RecurrentResidualCell(nn.Module):
         update_gate = torch.sigmoid(update_gate_proj + self.depth_update_bias[position])
 
         memory_read = self.memory_gain * self.memory_out(m_norm)
-        h_new = damp_gate * h_prev + y + read_gate * memory_read
-        m_new = forget_gate.float() * m + update_gate.float() * torch.tanh(y).float()
+        h_new = (damp_gate * h_prev + y + read_gate * memory_read).to(y.dtype)
+        m_new = (forget_gate.float() * m + update_gate.float() * torch.tanh(y).float()).to(y.dtype)
 
         self.last_read_gate.copy_(read_gate.mean().detach())
         self.last_update_gate.copy_(update_gate.mean().detach())
