@@ -1,12 +1,15 @@
-# conf/model/standard.yaml — baseline Pre-LN transformer
+# conf/model/standard.yaml — baseline Pre-LN transformer, depth-scaled
+#
+# 48 layers is where information dilution becomes measurable.
+# d_model=256, ff_dim=768 → 53.9M params.
 # @package model
 
 residual_mode: standard
 
-d_model: 768
-n_heads: 12
-ff_dim: 3072
-num_layers: 12
-max_seq_len: 1024
+d_model: 256
+n_heads: 8
+ff_dim: 768
+num_layers: 48
+max_seq_len: 128
 vocab_size: 50257
 dropout: 0.1

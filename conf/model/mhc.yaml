@@ -1,32 +1,24 @@
-# conf/model/mhc.yaml — Original DeepSeek mHC with Sinkhorn-Knopp
+# conf/model/mhc.yaml — Original DeepSeek mHC with Sinkhorn-Knopp, depth-scaled
 #
 # Reference: Xie, Z. et al., "mHC: Manifold-Constrained Hyper-Connections",
 #            arXiv:2512.24880, 2025 (Eq. 19: H_res = SK(exp(...)), 20 iters).
 #
-# For the mHC-Lite variant (arXiv:2601.05732, convex combination of
-# permutation matrices), use conf/model/mhc_lite.yaml instead.
-#
+# 48 layers, d_model=256, n=2 → 53.9M params (+ mHC overhead ~0.2%).
 # @package model
 
 residual_mode: hyper_connection
 
-hyper_connection:
-  num_channels: 2         # n — number of parallel residual channels.
-                          # 2: degenerate (every 2x2 doubly-stochastic is a
-                          #    convex combination of permutations; SK is
-                          #    equivalent to mHC-Lite here).
-                          # 4: paper's production choice (3B/9B/27B models).
-                          #    SK is supported, mHC-Lite is forbidden
-                          #    (n! = 24 makes permutation_convex intractable).
-  algorithm: sinkhorn_knopp
-  t_max: 20               # Sinkhorn-Knopp iterations (paper §4.2)
-  use_static_input: false
-  init_static_gate: 0.0   # ignored when use_static_input is false
-
-d_model: 768
-n_heads: 12
-ff_dim: 3072
-num_layers: 12
-max_seq_len: 1024
+d_model: 256
+n_heads: 8
+ff_dim: 768
+num_layers: 48
+max_seq_len: 128
 vocab_size: 50257
 dropout: 0.1
+
+hyper_connection:
+  num_channels: 2
+  algorithm: sinkhorn_knopp
+  t_max: 20
+  use_static_input: false
+  init_static_gate: 0.0

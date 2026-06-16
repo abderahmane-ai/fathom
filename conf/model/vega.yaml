@@ -1,22 +1,24 @@
-# conf/model/vega.yaml — VEGA depth-memory transformer
+# conf/model/vega.yaml — VEGA depth-memory transformer, depth-scaled
+#
+# 48 layers, d_model=256 → 53.9M params (+ VEGA overhead ~0.2M).
 # @package model
 
 residual_mode: vega
 
-vega:
-  rank: 16            # total EMA rank (must be divisible by n_heads)
-  n_heads: 4          # total EMA heads
-  n_fast_heads: 2     # heads assigned to the fast (short-horizon) decay group
-  read_gate_bias: -3.0  # initial bias for both r_fast and r_slow (closed at start)
-  write_gate_bias: -2.0 # initial bias for the write gate
-  damp_gate_bias: 3.0   # initial value for the damp gate bias
-  gate_init_std: 0.01
-  eps: 1e-5
-
-d_model: 768
-n_heads: 12
-ff_dim: 3072
-num_layers: 12
-max_seq_len: 1024
+d_model: 256
+n_heads: 8
+ff_dim: 768
+num_layers: 48
+max_seq_len: 128
 vocab_size: 50257
 dropout: 0.1
+
+vega:
+  rank: 16            # 4 heads × r_head=4 (vector state, small and fast)
+  n_heads: 4
+  n_fast_heads: 2     # equal fast/slow split
+  read_gate_bias: -3.0
+  write_gate_bias: -2.0
+  damp_gate_bias: 3.0
+  gate_init_std: 0.01
+  eps: 1.0e-5

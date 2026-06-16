@@ -1,21 +1,23 @@
-# conf/model/recurrent_residual.yaml — RR gated-memory transformer
+# conf/model/recurrent_residual.yaml — RR gated-memory transformer, depth-scaled
+#
+# 48 layers, d_model=256 → 53.9M params (+ RR overhead ~0.2M).
 # @package model
 
 residual_mode: recurrent_residual
 
-recurrent_residual:
-  read_gate_bias: -3.0    # gate starts ~closed (σ(-3) ≈ 0.047)
-  forget_gate_bias: 3.0   # gate starts highly retentive (σ(3) ≈ 0.952)
-  update_gate_bias: -2.0  # gate starts conservative (σ(-2) ≈ 0.119)
-  damp_gate_bias: 3.0     # damp gate starts ~1 (h_prev mostly kept)
-  gate_init_std: 0.01
-  memory_gain_init: 0.0     # zero-start: memory read is gated off at init
-  eps: 1e-5
-
-d_model: 768
-n_heads: 12
-ff_dim: 3072
-num_layers: 12
-max_seq_len: 1024
+d_model: 256
+n_heads: 8
+ff_dim: 768
+num_layers: 48
+max_seq_len: 128
 vocab_size: 50257
 dropout: 0.1
+
+recurrent_residual:
+  read_gate_bias: -3.0
+  forget_gate_bias: 3.0
+  update_gate_bias: -2.0
+  damp_gate_bias: 3.0
+  gate_init_std: 0.01
+  memory_gain_init: 0.0     # zero-start: memory read is gated off at init
+  eps: 1.0e-5

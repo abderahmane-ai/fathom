@@ -1,45 +1,30 @@
 # conf/trainer/default.yaml
 # @package trainer
 
-max_epochs: 10
-precision: bf16-mixed          # AMP via Lightning
-accumulate_grad_batches: 4     # effective batch = batch_size × 4
+max_epochs: 1                  # one pass through TinyStories 5% ~= 240M tokens
+precision: bf16-mixed
+accumulate_grad_batches: 1     # batch_size=96 already large
 gradient_clip_val: 1.0
 log_every_n_steps: 50
-val_check_interval: 0.25       # validate 4× per epoch
+val_check_interval: 500        # validate every 500 steps
 accelerator: auto
 devices: auto
 strategy: auto
 num_nodes: 1
 
 logger:
-  name: csv                    # "wandb" enables Weights & Biases (requires WANDB_API_KEY)
+  name: csv
   project: recurrent-residuals
   save_dir: logs
   offline: false
 
 optimizer:
   name: adamw
-  lr: 3.0e-4
+  lr: 6.0e-4                   # higher LR for deeper model (48 layers)
   weight_decay: 0.1
   betas: [0.9, 0.95]
 
 scheduler:
   name: cosine
-  warmup_steps: 2000
-  min_lr_ratio: 0.1            # final LR = 0.1 × peak_lr
-
-# ── FSDP (multi-GPU / multi-node) ─────────────────────────────────────────
-# Set strategy: fsdp in the CLI override and use TransformerDecoder's
-# get_fsdp_wrap_policy() to wrap each TransformerLayer individually while
-# leaving weight-tied depth cells (rr_cell, vega_cell) unwrapped.
-#
-# Example Lightning launch:
-#   python src/train.py model=vega trainer.strategy=fsdp \
-#       trainer.strategy.use_orig_params=true \
-#       trainer.strategy.auto_wrap_policy=null
-#
-# For FSDP2 (torch>=2.4), use strategy=fsdp2 and wrap layers with fully_shard.
-fsdp:
-  use_orig_params: true          # required for AdamW fused, gradient norm logging
-  auto_wrap_policy: null         # set via TransformerDecoder.get_fsdp_wrap_policy()
+  warmup_steps: 500
+  min_lr_ratio: 0.1

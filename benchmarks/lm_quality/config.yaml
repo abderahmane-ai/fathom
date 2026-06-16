@@ -1,17 +1,23 @@
+# Depth-scaling benchmark: standard vs VEGA at 48 layers.
+#
+# Designed for a ~3 hour A100 run (2 modes × ~70 min each).
+# At 48 layers, information dilution is measurable; standard residuals
+# accumulate 96 sublayer outputs indiscriminately while VEGA learns
+# to retrieve relevant history via linear attention over depth.
+#
+# Model: 53.9M params (under 60M cap), 200M tokens per mode.
+
 seed: 42
 modes:
   - standard
-  - recurrent_residual
   - vega
-  - block_attnres
-  - hyper_connection
 
 model:
   residual_mode: standard
-  d_model: 192
-  n_heads: 6
-  ff_dim: 768
-  num_layers: 24
+  d_model: 256
+  n_heads: 8          # head_dim = 32
+  ff_dim: 768          # 3x expansion (SwiGLU: 2×768 gate+up, 768→256 down)
+  num_layers: 48       # 96 sublayers — deep enough for dilution to manifest
   max_seq_len: 128
   vocab_size: 50257
   dropout: 0.1
@@ -24,16 +30,16 @@ model:
     memory_gain_init: 0.0
     eps: 1.0e-5
   vega:
-    rank: 16
+    rank: 16            # 4 heads × r_head=4 (vector state, small and fast)
     n_heads: 4
-    n_fast_heads: 2
+    n_fast_heads: 2     # equal fast/slow split
     read_gate_bias: -3.0
     write_gate_bias: -2.0
     damp_gate_bias: 3.0
     gate_init_std: 0.01
     eps: 1.0e-5
   attnres_block:
-    block_size: 2  # 24 layers × 2 sublayers / 2 = 24 blocks
+    block_size: 2
   hyper_connection:
     num_channels: 2
     use_static_input: false
@@ -44,14 +50,13 @@ data:
   dataset_config: default
   tokenizer_name: gpt2
   max_seq_len: 128
-  batch_size: 128
-  batch_size_block_attnres: 32  # BlockAttnRes O(L^2) memory; accum matches 128
+  batch_size: 96
   num_workers: 4
   tokenization_num_proc: 4
   packed_cache_dir: null
-  train_split: train[:1%]
-  val_split: validation[:1%]
-  test_split: validation[:1%]
+  train_split: train[:5%]       # 5% of TinyStories ~ 75M tokens
+  val_split: validation[:5%]
+  test_split: validation[:5%]
 
 trainer:
   precision: bf16-mixed
@@ -62,20 +67,20 @@ trainer:
   matmul_precision: high
   gradient_clip_val: 1.0
   scheduler:
-    warmup_steps: 200
+    warmup_steps: 500
     min_lr_ratio: 0.1
   optimizer:
-    lr: 3.0e-4
+    lr: 6.0e-4           # higher LR for deeper model (more layers = more signal)
     weight_decay: 0.1
     betas: [0.9, 0.95]
 
 benchmark:
   task: lm
   max_params: 60000000
-  max_steps: 4000
-  estimated_train_batches: 287
-  val_check_interval: 500
-  checkpoint_every_n_steps: 500
+  max_steps: 20000       # 20000 × 96 × 128 = 245.8M tokens per mode
+  estimated_train_batches: null
+  val_check_interval: 2000
+  checkpoint_every_n_steps: 5000
   status_every_n_steps: 100
   log_every_n_steps: 50
   save_top_k: 2

@@ -1,14 +1,17 @@
-# conf/data/wikitext103.yaml
+# conf/data/wikitext103.yaml — TinyStories data config
+#
+# TinyStories trains faster than WikiText-103 and gives meaningful
+# perplexity comparisons at small scale.
 # @package data
 
-dataset_name: wikitext
-dataset_config: wikitext-103-raw-v1
-tokenizer_name: gpt2            # BPE tokenizer, vocab_size=50257
-max_seq_len: 1024
-batch_size: 8
+dataset_name: roneneldan/TinyStories
+dataset_config: default
+tokenizer_name: gpt2
+max_seq_len: 128
+batch_size: 96
 num_workers: 4
 tokenization_num_proc: 4
 packed_cache_dir: null
-train_split: train
-val_split: validation
-test_split: test
+train_split: train[:5%]
+val_split: validation[:5%]
+test_split: validation[:5%]
