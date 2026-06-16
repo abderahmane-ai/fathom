@@ -16,7 +16,7 @@ class DPSEvaluator:
     It accumulates the cross-products necessary for Ridge Regression incrementally.
     """
 
-    def __init__(self, model: nn.Module, layer_idx: int, final_norm_name: str = "norm") -> None:
+    def __init__(self, model: nn.Module, layer_idx: int, final_norm_name: str = "ln_f") -> None:
         """Initialize the evaluator for a specific layer.
 
         Args:
@@ -57,31 +57,14 @@ class DPSEvaluator:
 
     def _register_hooks(self, final_norm_name: str) -> None:
         """Register forward hooks to capture activations."""
-        # Find the target layer (e.g., model.layers[layer_idx])
-        # We need to adapt this slightly depending on the exact model structure in this repo.
-        # Assuming typical structure: model.decoder.layers or model.layers
+        # Find the target layer: model.layers[layer_idx]
+        target_module = self.model.layers[self.layer_idx]
 
-        target_module = None
-        if hasattr(self.model, "decoder") and hasattr(self.model.decoder, "layers"):
-            target_module = self.model.decoder.layers[self.layer_idx]
-        elif hasattr(self.model, "layers"):
-            target_module = self.model.layers[self.layer_idx]
-        else:
-            raise ValueError("Could not find layers list in model.")
-
-        final_norm_module = None
-        if hasattr(self.model, "decoder") and hasattr(self.model.decoder, final_norm_name):
-            final_norm_module = getattr(self.model.decoder, final_norm_name)
-        elif hasattr(self.model, final_norm_name):
+        # Find the final norm or fall back to the last layer's output
+        if hasattr(self.model, final_norm_name):
             final_norm_module = getattr(self.model, final_norm_name)
         else:
-            # Fallback to the last layer's output if no final norm exists
-            if hasattr(self.model, "decoder") and hasattr(self.model.decoder, "layers"):
-                final_norm_module = self.model.decoder.layers[-1]
-            elif hasattr(self.model, "layers"):
-                final_norm_module = self.model.layers[-1]
-            else:
-                raise ValueError(f"Could not find final norm '{final_norm_name}' or last layer.")
+            final_norm_module = self.model.layers[-1]
 
         def target_hook(module: nn.Module, inputs: tuple, output: torch.Tensor | tuple) -> None:
             # output might be a tuple:
@@ -160,7 +143,6 @@ class DPSEvaluator:
         self.xtx += x_tilde.T @ x_tilde
         self.xty += x_tilde.T @ y
 
-        # Tr(Y^T Y) is simply the sum of all squared elements in Y
         self.yty += torch.sum(y**2)
 
         # 4. Update variance accumulators for Y
@@ -168,14 +150,7 @@ class DPSEvaluator:
 
         # 5. Update GPS accumulators if targets are provided
         if targets is not None:
-            # Locate the language modeling head
-            head = None
-            if hasattr(self.model, "lm_head"):
-                head = self.model.lm_head
-            elif hasattr(self.model, "model") and hasattr(self.model.model, "lm_head"):
-                head = self.model.model.lm_head
-            else:
-                raise AttributeError("Could not find lm_head in the model to compute early gradients.")
+            head = self.model.lm_head
 
             with torch.no_grad():
                 # Compute early logits using LayerNorm-normalized activation y (which is a_k)

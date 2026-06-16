@@ -376,9 +376,7 @@ class TestHyperConnectionGradients:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Spec tests — bit-level agreement with a hand-coded reference implementation
-# that follows the paper's algorithm verbatim.  These tests are the highest-ROI
-# thing in this file: they lock the algorithm to the spec, not to our impl.
+# Spec tests — bit-level agreement with a reference SK implementation
 # ─────────────────────────────────────────────────────────────────────────
 
 
@@ -527,9 +525,7 @@ class TestSinkhornKnoppSpec:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# n=4 support — the paper's production choice.  At n=4 the Sinkhorn-Knopp
-# manifold constraint is non-trivial (9-dimensional, not 1-dimensional as
-# at n=2), which is where mHC's contribution actually matters.
+# n=4 support — non-degenerate Birkhoff polytope (dimension 9 vs 1 at n=2)
 # ─────────────────────────────────────────────────────────────────────────
 
 

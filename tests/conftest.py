@@ -16,12 +16,6 @@ def seed() -> None:
 
 
 @pytest.fixture
-def device() -> torch.device:
-    """CPU device (tests run on CPU; GPU is optional)."""
-    return torch.device("cpu")
-
-
-@pytest.fixture
 def B() -> int:
     """Batch size."""
     return 2
@@ -70,79 +64,5 @@ def standard_cfg(d_model, n_heads, ff_dim, num_layers):
             "vocab_size": 256,
             "dropout": 0.0,
             "residual_mode": "standard",
-        }
-    )
-
-
-@pytest.fixture
-def attnres_cfg(d_model, n_heads, ff_dim, num_layers):
-    """Minimal config for block_attnres mode with 2 layers per block."""
-    return OmegaConf.create(
-        {
-            "d_model": d_model,
-            "n_heads": n_heads,
-            "ff_dim": ff_dim,
-            "num_layers": num_layers,
-            "max_seq_len": 32,
-            "vocab_size": 256,
-            "dropout": 0.0,
-            "residual_mode": "block_attnres",
-            "attnres_block": {"block_size": 4},
-        }
-    )
-
-
-@pytest.fixture
-def rr_cfg(d_model, n_heads, ff_dim, num_layers):
-    """Minimal config for recurrent_residual mode."""
-    return OmegaConf.create(
-        {
-            "d_model": d_model,
-            "n_heads": n_heads,
-            "ff_dim": ff_dim,
-            "num_layers": num_layers,
-            "max_seq_len": 32,
-            "vocab_size": 256,
-            "dropout": 0.0,
-            "residual_mode": "recurrent_residual",
-            "recurrent_residual": {
-                "read_gate_bias": -3.0,
-                "forget_gate_bias": 3.0,
-                "update_gate_bias": -2.0,
-                "damp_gate_bias": 3.0,
-                "gate_init_std": 0.01,
-                "memory_gain_init": 0.0,
-                "eps": 1e-5,
-            },
-        }
-    )
-
-
-@pytest.fixture
-def vega_cfg(d_model, n_heads, ff_dim, num_layers):
-    """Minimal config for vega mode.
-
-    rank=8 is divisible by n_heads=4; n_fast_heads=2 gives an equal fast/slow split.
-    """
-    return OmegaConf.create(
-        {
-            "d_model": d_model,
-            "n_heads": n_heads,
-            "ff_dim": ff_dim,
-            "num_layers": num_layers,
-            "max_seq_len": 32,
-            "vocab_size": 256,
-            "dropout": 0.0,
-            "residual_mode": "vega",
-            "vega": {
-                "rank": 8,
-                "n_heads": 4,
-                "n_fast_heads": 2,
-                "read_gate_bias": -3.0,
-                "write_gate_bias": -2.0,
-                "damp_gate_bias": 3.0,
-                "gate_init_std": 0.01,
-                "eps": 1e-5,
-            },
         }
     )

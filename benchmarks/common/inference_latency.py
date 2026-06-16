@@ -137,13 +137,17 @@ def latency_sweep(
     n_runs: int = 20,
     device: str = "cuda",
 ) -> list[dict[str, Any]]:
-    """Profile latency across a list of depths by mutating the model's num_layers.
+    """Profile latency across a list of depths.
+
+    IMPORTANT: This function does NOT rebuild the model at different depths —
+    it profiles the same model repeatedly.  To compare latency across depths,
+    construct a fresh model at each target depth and call ``profile_forward``
+    individually.  The ``depth`` key in each result dict records the intended
+    depth for bookkeeping but the measurements are all taken on the same model.
 
     Args:
-        model: A standard Pre-LN transformer. Its ``.layers`` ModuleList is
-            rebuilt at each depth to keep parameter counts comparable across
-            the sweep. For other residual modes, pass a fresh model per depth.
-        depths: List of layer counts to evaluate.
+        model: A transformer model (profiled as-is at its current depth).
+        depths: List of depth labels to record in the results.
         seq_len: Sequence length to profile at.
         batch_size: Batch size.
         vocab_size: Vocabulary size for synthetic inputs.
@@ -153,7 +157,8 @@ def latency_sweep(
 
     Returns:
         List of dicts with keys ``depth``, ``latency_ms``, ``tokens_per_second``,
-        ``peak_vram_mb``. One entry per depth.
+        ``peak_vram_mb``.  All entries measure the same model; the ``depth``
+        field records the intended label only.
     """
     results: list[dict[str, Any]] = []
     for depth in depths:

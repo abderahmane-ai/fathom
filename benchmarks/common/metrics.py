@@ -45,20 +45,6 @@ def peak_cuda_memory_mb() -> float:
     return float(torch.cuda.max_memory_allocated() / (1024 * 1024))
 
 
-def safe_float(value: Any) -> float:
-    """Convert scalar-like values to ``float``.
-
-    Args:
-        value: Python scalar or scalar tensor.
-
-    Returns:
-        Float representation.
-    """
-    if isinstance(value, torch.Tensor):
-        return float(value.detach().cpu().item())
-    return float(value)
-
-
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     """Write a JSON payload atomically.
 
@@ -84,9 +70,7 @@ def compute_dps_closed_form(
 ) -> float:
     """Compute Depth Preservation Score (DPS) via closed-form Ridge Regression.
 
-    This function solves the ridge regression problem to find the linear mapping
-    from the source states to the target states using pre-accumulated covariance
-    matrices, and then calculates the R-squared value.
+    Solves the ridge problem on pre-accumulated covariance matrices and returns R².
 
     Args:
         xtx: The accumulated covariance matrix [X, 1]^T [X, 1] of shape (d+1, d+1).

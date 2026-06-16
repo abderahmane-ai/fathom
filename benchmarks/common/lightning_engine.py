@@ -47,17 +47,6 @@ _VEGA_DECAY_VAR_REG_WEIGHT: float = 0.001
 log = logging.getLogger(__name__)
 
 
-def _tensor_stats(t: torch.Tensor, name: str) -> str:
-    """Return a compact diagnostic string for a tensor."""
-    tf = t.detach().float()
-    return (
-        f"{name}: shape={tuple(t.shape)} dtype={t.dtype} "
-        f"min={tf.min().item():.4g} max={tf.max().item():.4g} "
-        f"mean={tf.mean().item():.4g} "
-        f"nan={tf.isnan().any().item()} inf={tf.isinf().any().item()}"
-    )
-
-
 class BenchmarkModule(lightning.LightningModule):
     """Lightning module for language-model and synthetic benchmark batches.
 

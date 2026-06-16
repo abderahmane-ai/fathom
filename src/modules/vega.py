@@ -183,8 +183,7 @@ class VEGACell(nn.Module):
             nn.init.normal_(self.fused_write_read_proj.weight[:rank], 0.0, gate_init_std)
             nn.init.normal_(self.fused_write_read_proj.weight[rank:], 0.0, gate_init_std)
             self.fused_write_read_proj.bias.data[:rank].fill_(write_gate_bias)
-            # read_proj_down originally had bias=False; zeroing this slice preserves equivalence
-            # and prevents future maintainers from accidentally adding a non-zero bias here.
+            # read_proj_down originally had bias=False; keep this slice zeroed.
             self.fused_write_read_proj.bias.data[rank:].zero_()
 
             nn.init.normal_(self.read_proj_up.weight, 0.0, gate_init_std)

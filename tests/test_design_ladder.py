@@ -337,7 +337,7 @@ def test_attnres_uniform_mean_generalises_to_n_blocks() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Cross-cutting: parametrised init-contract table
+# Init-contract reference table (documentation, not behavioral verification)
 # ─────────────────────────────────────────────────────────────────────────
 
 
@@ -351,15 +351,11 @@ def test_attnres_uniform_mean_generalises_to_n_blocks() -> None:
         (4, "attnres", "mean([*blocks, partial_block])", None),
     ],
 )
+@pytest.mark.skip(reason="Documentation-only reference table for the design-ladder init contracts")
 def test_design_ladder_init_contract_summary(rung: int, mechanism: str, init_form: str, strict: bool | None) -> None:
-    """Every rung's init contract, in one parametrised table.
+    """Reference table of init contracts across the design ladder.
 
-    This test always passes — its purpose is to make the design-ladder
-    design intent **greppable** and **visible in the test summary**.
-
-    Run ``pytest tests/test_design_ladder.py -k design_ladder -v`` to see
-    the table; the parametrise block above is the source of truth for
-    which contract each rung satisfies.
+    See the actual contract tests above for behavioral verification.
     """
     assert 0 <= rung <= 4
     assert mechanism in {"standard", "rr", "vega", "mhc", "attnres"}

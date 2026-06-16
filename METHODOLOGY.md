@@ -45,10 +45,10 @@ RR replaces uniform accumulation with a **gated depth-wise working memory** $\ma
 $$\mathbf{y}_l = \mathcal{F}_l(\text{LayerNorm}(\mathbf{h}_{l-1}))$$
 
 **Read gate** (how much memory to inject):
-$$\mathbf{r}_l = \sigma(\mathbf{W}_r \mathbf{y}_l + \mathbf{p}_r[l])$$
+$$\mathbf{r}_l = \sigma(\mathbf{W}_r \text{RMSNorm}(\mathbf{y}_l) + \mathbf{p}_r[l])$$
 
 **Damp gate** (how much of the previous hidden state to keep):
-$$\mathbf{d}_l = \sigma(\mathbf{W}_d \mathbf{y}_l + \mathbf{p}_d[l])$$
+$$\mathbf{d}_l = \sigma(\mathbf{W}_d \text{RMSNorm}(\mathbf{y}_l) + \mathbf{p}_d[l])$$
 
 **Hidden state update**:
 $$\mathbf{h}_l = \mathbf{d}_l \odot \mathbf{h}_{l-1} + \mathbf{y}_l + \mathbf{r}_l \odot (\mathbf{g}_m \odot \mathbf{W}_{\text{out}}(\text{RMSNorm}(\mathbf{m}_{l-1})))$$
@@ -57,7 +57,7 @@ $$\mathbf{h}_l = \mathbf{d}_l \odot \mathbf{h}_{l-1} + \mathbf{y}_l + \mathbf{r}
 $$\mathbf{f}_l = \sigma(\mathbf{W}_f \text{RMSNorm}(\mathbf{m}_{l-1}) + \mathbf{p}_f[l])$$
 
 **Update gate** (how aggressively to write the new output):
-$$\mathbf{u}_l = \sigma(\mathbf{W}_u \mathbf{y}_l + \mathbf{p}_u[l])$$
+$$\mathbf{u}_l = \sigma(\mathbf{W}_u \text{RMSNorm}(\mathbf{y}_l) + \mathbf{p}_u[l])$$
 
 **Memory update**:
 $$\mathbf{m}_l = \mathbf{f}_l \odot \mathbf{m}_{l-1} + \mathbf{u}_l \odot \tanh(\mathbf{y}_l)$$
@@ -100,9 +100,9 @@ back to a **Matrix State** $\mathbf{S} \in \mathbb{R}^{n_{\text{heads}} \times r
 
 ### 4.1 Projections
 
-Each sublayer projects the current output $\mathbf{y}$ into the EMA space:
-$$\mathbf{K} = \mathbf{W}_K \mathbf{y}, \quad \mathbf{V} = \mathbf{W}_V \mathbf{y},
-\quad \mathbf{Q} = \mathbf{W}_Q \mathbf{y}$$
+Each sublayer projects the current output $\mathbf{y}$ into the EMA space (after parameter-free RMSNorm):
+$$\mathbf{K} = \mathbf{W}_K \text{RMSNorm}(\mathbf{y}), \quad \mathbf{V} = \mathbf{W}_V \text{RMSNorm}(\mathbf{y}),
+\quad \mathbf{Q} = \mathbf{W}_Q \text{RMSNorm}(\mathbf{y})$$
 
 Per-sublayer depth query bias is added (key depth bias is omitted):
 $$\mathbf{Q}_{dep} = \mathbf{Q} + b_Q[pos], \quad \mathbf{K}_{dep} = \mathbf{K}$$
@@ -159,8 +159,8 @@ enters the state.
 
 ### 4.5 Initialization & Regularization
 
-- Decay gates initialized log-linearly in a continuous spectrum from $0.0$ to $4.5$ across
-  all channels.
+- Decay gates initialized log-linearly in a split spectrum: fast heads cover $0.0$–$1.2$,
+  slow heads cover $2.0$–$4.5$ (with a gap between the two groups by design).
 - Variance regularization is added to the training objective to prevent decay spectrum collapse
   to a uniform value: $\mathcal{L}_\text{reg} = -0.001 \cdot \text{Var}(\boldsymbol{\alpha})$.
 - Output projection $\mathbf{W}_\text{out}$ is zero-initialized → at init the retrieved

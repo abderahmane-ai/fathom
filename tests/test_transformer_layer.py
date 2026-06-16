@@ -190,10 +190,8 @@ def _assert_mode_output_shape(out, mode: str, config) -> None:
     ],
 )
 def test_forward_dispatch_routes_to_mode_specific_method_and_fires_hooks(config, mode: str) -> None:
-    """Unified forward() must dispatch to the correct mode-specific method for every
-    residual mode, and must trigger PyTorch forward hooks — the whole purpose of
-    the routing refactor (commit e9a1a41) is to make hooks fire uniformly so the
-    per-layer grad / activation trackers in benchmarks/common/ see every mode.
+    """Unified forward() must dispatch to the correct mode-specific method
+    and trigger PyTorch forward hooks for all residual modes.
     """
     layer = _build_layer_for_mode(config, mode)
 
