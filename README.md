@@ -126,7 +126,7 @@ Uses conditional Vector/Matrix state based on head rank, query-only bias, and so
 
 ```
 values  = stack([*block_history, current_block])
-logits  = (pseudo_query · RMSNorm(values)) / sqrt(d_model)      [per position, over depth axis]
+	logits  = pseudo_query · RMSNorm(values)                         [per position, over depth axis; no √d — paper's formula]
 weights = softmax(logits)
 h_new   = sum(weights * values)
 ```

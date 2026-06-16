@@ -304,7 +304,7 @@ Let $B_0, B_1, \ldots, B_{n-1}$ be the states at completed block boundaries, and
 
 $$\text{values} = \text{stack}([B_0, B_1, \ldots, B_{n-1}, B_\text{cur}]) \in \mathbb{R}^{(n+1) \times d}$$
 
-$$\text{logits} = \frac{\mathbf{q}^\top \text{RMSNorm}(\text{values})}{\sqrt{d_{model}}} \quad (\mathbf{q} \in \mathbb{R}^d \text{ is the pseudo-query})$$
+$$\text{logits} = \mathbf{q}^\top \text{RMSNorm}(\text{values}) \quad (\mathbf{q} \in \mathbb{R}^d \text{ is the pseudo-query, no }\sqrt{d}\text{ scaling — paper's formula})$$
 
 $$\mathbf{w} = \text{softmax}(\text{logits}) \in \mathbb{R}^{n+1}$$
 
