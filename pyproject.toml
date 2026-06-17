@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "recurrent-residuals"
+name = "fathom"
 version = "0.1.0"
 description = "Comparing VEGA, Recurrent Residuals, and Attention Residuals for transformer LMs"
 readme = "README.md"
@@ -37,7 +37,7 @@ reports = [
 ]
 
 [project.urls]
-Repository = "https://github.com/abderahmane-ai/recurrent-residuals"
+Repository = "https://github.com/abderahmane-ai/fathom"
 
 [tool.setuptools.packages.find]
 where = ["."]

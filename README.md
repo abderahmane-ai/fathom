@@ -1,6 +1,6 @@
 # Recurrent Residuals, VEGA, and Attention Residuals
 
-[![CI](https://github.com/anomalyco/recurrent-residuals/actions/workflows/ci.yml/badge.svg)](https://github.com/anomalyco/recurrent-residuals/actions/workflows/ci.yml)
+[![CI](https://github.com/abderahmane-ai/fathom/actions/workflows/ci.yml/badge.svg)](https://github.com/abderahmane-ai/fathom/actions/workflows/ci.yml)
 [![Tests](https://img.shields.io/badge/tests-276_passing-brightgreen)](tests/)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](pyproject.toml)
 
@@ -22,8 +22,8 @@ Rungs 1–3 form the history-aggregation cost/expressivity frontier: **VEGA is t
 ## Installation
 
 ```bash
-git clone https://github.com/your-repo/recurrent-residuals.git
-cd recurrent-residuals
+git clone https://github.com/abderahmane-ai/fathom.git
+cd fathom
 
 # Core library
 pip install .
@@ -195,7 +195,7 @@ and the per-table tests in `tests/test_tables.py`.
 ## Citation
 
 ```bibtex
-@misc{recurrent-residuals2026,
+@misc{fathom2026,
   author    = {Abdou Magico},
   title     = {Recurrent Residuals, VEGA, and Attention Residuals for Deep Transformers},
   year      = {2026},

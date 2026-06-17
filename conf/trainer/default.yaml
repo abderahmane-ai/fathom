@@ -14,7 +14,7 @@ num_nodes: 1
 
 logger:
   name: csv
-  project: recurrent-residuals
+  project: fathom
   save_dir: logs
   offline: false
 

@@ -75,4 +75,4 @@ benchmark:
 
 wandb:
   enabled: false
-  project: recurrent-residuals
+  project: fathom

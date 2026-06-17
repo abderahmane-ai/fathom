@@ -457,7 +457,7 @@ def _build_logger(cfg: DictConfig, benchmark_name: str, residual_mode: str, run_
             from lightning.pytorch.loggers import WandbLogger
 
             return WandbLogger(
-                project=str(wandb_cfg.get("project", "recurrent-residuals")),
+                project=str(wandb_cfg.get("project", "fathom")),
                 name=f"{benchmark_name}-{residual_mode}-{run_id}",
                 save_dir=str(logs),
                 config=OmegaConf.to_container(cfg, resolve=True),
