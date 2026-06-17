@@ -4,7 +4,6 @@ modes:
   - recurrent_residual
   - vega
   - block_attnres
-  - hyper_connection
 
 model:
   residual_mode: standard

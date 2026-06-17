@@ -111,10 +111,10 @@ def run_memory_profile(run_id: str, compile: bool = False) -> None:
                     }
                     for L in [12, 24, 48, 96]
                 ]
-                for mode in ["standard", "recurrent_residual", "vega", "block_attnres", "hyper_connection"]
+                for mode in ["standard", "recurrent_residual", "vega", "block_attnres"]
             }
         else:
-            modes = ["standard", "recurrent_residual", "vega", "block_attnres", "hyper_connection"]
+            modes = ["standard", "recurrent_residual", "vega", "block_attnres"]
             depths = [12, 24, 48, 96]
             seq_len = 100
             vocab_size = 1024

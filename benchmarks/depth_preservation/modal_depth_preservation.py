@@ -319,26 +319,6 @@ def run_block_attnres(run_id: str, compile: bool = False) -> None:
     _run_mode("block_attnres", run_id, compile=compile)
 
 
-@app.function(
-    image=image,
-    gpu="A100",
-    timeout=60 * 60 * 2,
-    volumes={ARTIFACT_MOUNT: artifact_volume},
-    retries=default_retries(),
-)
-def run_hyper_connection(run_id: str, compile: bool = False) -> None:
-    """Run the mHC-Lite hyper-connection depth preservation benchmark.
-
-    Args:
-        run_id: Shared run id.
-        compile: Whether to compile the model.
-
-    Returns:
-        None.
-    """
-    _run_mode("hyper_connection", run_id, compile=compile)
-
-
 @app.local_entrypoint()
 def main(wait: bool = False, compile: bool = False) -> None:
     """Spawn all DPS benchmark modes.
@@ -356,7 +336,6 @@ def main(wait: bool = False, compile: bool = False) -> None:
         "recurrent_residual": run_recurrent_residual.spawn(run_id, compile=compile),
         "vega": run_vega.spawn(run_id, compile=compile),
         "block_attnres": run_block_attnres.spawn(run_id, compile=compile),
-        "hyper_connection": run_hyper_connection.spawn(run_id, compile=compile),
     }
     manifest = write_spawn_manifest(BENCHMARK_NAME, handles, run_id)
     print(f"Spawned {BENCHMARK_NAME} jobs with run_id={run_id}")

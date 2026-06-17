@@ -4,22 +4,20 @@
 [![Tests](https://img.shields.io/badge/tests-276_passing-brightgreen)](tests/)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](pyproject.toml)
 
-A controlled comparison of **five** depth-stream residual mechanisms for causal transformer language models, organized as a **design ladder** of progressively richer approximations of the same operation: *letting a layer reach back into the history of hidden states produced earlier in the depth stream.*
+A controlled comparison of **four** depth-stream residual mechanisms for causal transformer language models, organized as a **design ladder** of progressively richer approximations of the same operation: *letting a layer reach back into the history of hidden states produced earlier in the depth stream.*
 
 ## What Is Being Compared
 
-Standard transformer residuals (`h = h + y`) accumulate every layer's output with equal weight, which dilutes early-layer signals in deep networks. This project benchmarks **five** mechanisms against the standard baseline:
+Standard transformer residuals (`h = h + y`) accumulate every layer's output with equal weight, which dilutes early-layer signals in deep networks. This project benchmarks **four** mechanisms against the standard baseline:
 
 | Rung | Mechanism | History representation | Complexity per Layer |
 |---:|---|---|---|
 | 0 | **Standard** | `h = h + y` (no history) | O(d) |
 | 1 | **Recurrent Residuals (RR)** | Single gated memory vector | O(rank · d) |
 | 2 | **VEGA** | Multi-head linear-attention state (depth-axis linear attention) | O(n_heads · r_head · d) |
-| 3 | **mHC** (DeepSeek, [arXiv:2512.24880](https://arxiv.org/abs/2512.24880)) | Parallel residual channels with input-dependent pre/post/residual mixing, doubly-stochastic via Sinkhorn-Knopp. Supports `num_channels=2` and `num_channels=4` (paper's production choice). | O(m²·d + m·d·m²) per sublayer |
-| 3' | **mHC-Lite** ([arXiv:2601.05732](https://arxiv.org/abs/2601.05732)) | Same as mHC, but $H_\text{res}$ is a convex combination of permutation matrices (Birkhoff-von Neumann). n=2 only because $n!$ blows up. | O(m²·d + m·d·m!) per sublayer |
-| 4 | **Attention Residuals (AttnRes)** | Softmax aggregation over previous block states; [Moonshot AI, arXiv:2603.15031](https://arxiv.org/abs/2603.15031) | O(B · d) per block |
+| 3 | **Attention Residuals (AttnRes)** | Softmax aggregation over previous block states; [Moonshot AI, arXiv:2603.15031](https://arxiv.org/abs/2603.15031) | O(B · d) per block |
 
-Rungs 1–4 form a cost/expressivity frontier: **VEGA is to AttnRes what RWKV is to softmax attention** — same query-conditioned retrieval idea, but a closed-form linear recurrence over a fixed-size state at $O(L)$ total cost instead of an explicit softmax at $O(L^2)$. mHC and mHC-Lite are included as orthogonal concurrent-work baselines (parallel channels, not history aggregation); the default config uses the original DeepSeek Sinkhorn-Knopp algorithm. Full mathematical derivations and the design-ladder framing are in [METHODOLOGY.md](METHODOLOGY.md).
+Rungs 1–3 form the history-aggregation cost/expressivity frontier: **VEGA is to AttnRes what RWKV is to softmax attention** — same query-conditioned retrieval idea, but a closed-form linear recurrence over a fixed-size state at $O(L)$ total cost instead of an explicit softmax at $O(L^2)$. Full mathematical derivations and the design-ladder framing are in [METHODOLOGY.md](METHODOLOGY.md).
 
 ## Installation
 
@@ -60,7 +58,7 @@ python src/train.py model.d_model=512 trainer.precision=bf16-mixed
 
 ## Benchmarks
 
-Four evaluation tasks are available via Modal. Each task runs all four modes in parallel on A100 GPUs.
+Four evaluation tasks are available via Modal.
 
 | Benchmark | Task | Metric |
 |---|---|---|

@@ -116,7 +116,7 @@ def capture_run_metadata(
     Args:
         benchmark_name: e.g. "lm_quality".
         run_id: e.g. "lm_quality-20260601T120000Z".
-        residual_mode: e.g. "hyper_connection".
+        residual_mode: e.g. "vega".
         config: an OmegaConf DictConfig (or any object with `.to_container()` /
             `__str__`); will be serialized to a plain dict for JSON.
         seed: random seed for this run (optional, recommended).

@@ -53,7 +53,7 @@ class PerLayerGradTracker:
 
     Compatible with residual modes whose layer forward takes a single tensor
     as its first argument (``standard``, ``recurrent_residual``, ``vega``,
-    ``hyper_connection``). Block-based modes (``block_attnres``,
+    ``vega``). Block-based modes (``block_attnres``,
     ``full_attnres``) pass a Python list as first argument and are silently
     skipped: their per-layer gradient is not directly comparable.
 

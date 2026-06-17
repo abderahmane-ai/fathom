@@ -19,7 +19,7 @@ class DPSResult:
     """Schema for ``depth_preservation/<run_id>/<mode>_dps.json``.
 
     Attributes:
-        residual_mode: e.g. "hyper_connection".
+        residual_mode: e.g. "vega".
         run_id: e.g. "depth_preservation-20260601T120000Z".
         dps_scores: Per-layer DPS values, length = num_layers - 1.
         gps_scores: Per-layer GPS values, same length as dps_scores.
@@ -136,7 +136,7 @@ class NIAHResult:
 
     Attributes:
         benchmark_name: Always "natural_niah".
-        residual_mode: e.g. "hyper_connection".
+        residual_mode: e.g. "vega".
         run_id: The lm_run_id that produced the checkpoint.
         success: Whether the passkey was retrieved.
         generated_text: The model's completion.
@@ -174,7 +174,7 @@ class LMRunSummary:
 
     Attributes:
         benchmark_name: e.g. "lm_quality".
-        residual_mode: e.g. "hyper_connection".
+        residual_mode: e.g. "vega".
         run_id: e.g. "lm_quality-20260601T120000Z".
         parameter_count: Total parameter count.
         elapsed_seconds: Wall-clock training time.

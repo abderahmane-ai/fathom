@@ -347,8 +347,7 @@ def test_attnres_uniform_mean_generalises_to_n_blocks() -> None:
         (0, "standard", "h_prev + (sublayer outputs)", True),
         (1, "rr", "σ(+3)·h_prev + y ≈ 0.953·h_prev + y", False),
         (2, "vega", "σ(+3)·h_prev + y ≈ 0.953·h_prev + y", False),
-        (3, "mhc", "H_res·H + 2σ(±1)·y ≈ H + 1.462·y[0] + 0.538·y[1]", False),
-        (4, "attnres", "mean([*blocks, partial_block])", None),
+        (3, "attnres", "mean([*blocks, partial_block])", None),
     ],
 )
 @pytest.mark.skip(reason="Documentation-only reference table for the design-ladder init contracts")
@@ -357,7 +356,7 @@ def test_design_ladder_init_contract_summary(rung: int, mechanism: str, init_for
 
     See the actual contract tests above for behavioral verification.
     """
-    assert 0 <= rung <= 4
-    assert mechanism in {"standard", "rr", "vega", "mhc", "attnres"}
+    assert 0 <= rung <= 3
+    assert mechanism in {"standard", "rr", "vega", "attnres"}
     assert isinstance(init_form, str) and len(init_form) > 0
     assert strict in {True, False, None}
