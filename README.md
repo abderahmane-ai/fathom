@@ -12,10 +12,10 @@ Standard transformer residuals (`h = h + y`) accumulate every layer's output wit
 
 | Rung | Mechanism | History representation | Complexity per Layer |
 |---:|---|---|---|
-| 0 | **Standard** | `h = h + y` (no history) | O(d) |
-| 1 | **Recurrent Residuals (RR)** | Single gated memory vector | O(rank · d) |
-| 2 | **VEGA** | Multi-head linear-attention state (depth-axis linear attention) | O(n_heads · r_head · d) |
-| 3 | **Attention Residuals (AttnRes)** | Softmax aggregation over previous block states; [Moonshot AI, arXiv:2603.15031](https://arxiv.org/abs/2603.15031) | O(B · d) per block |
+| 0 | **Standard** | $h = h + y$ (no history) | $O(d)$ |
+| 1 | **Recurrent Residuals (RR)** | Single gated memory vector | $O(r \cdot d)$ |
+| 2 | **VEGA** | Multi-head linear-attention state (depth-axis linear attention) | $O(n_h \, r_h \, d)$ |
+| 3 | **Attention Residuals (AttnRes)** | Softmax aggregation over previous block states; [Moonshot AI, arXiv:2603.15031](https://arxiv.org/abs/2603.15031) | $O(B \cdot d)$ per block |
 
 Rungs 1–3 form the history-aggregation cost/expressivity frontier: **VEGA is to AttnRes what RWKV is to softmax attention** — same query-conditioned retrieval idea, but a closed-form linear recurrence over a fixed-size state at $O(L)$ total cost instead of an explicit softmax at $O(L^2)$. Full mathematical derivations and the design-ladder framing are in [METHODOLOGY.md](METHODOLOGY.md).
 
@@ -50,7 +50,7 @@ python src/train.py model=recurrent_residual
 python src/train.py model=vega
 
 # Block Attention Residuals (Moonshot AI)
-python src/train.py model=attnres
+python src/train.py model=block_attnres
 
 # Override any parameter
 python src/train.py model.d_model=512 trainer.precision=bf16-mixed
@@ -86,10 +86,10 @@ pytest tests/
 ### Recurrent Residuals (RR)
 
 ```
-read_gate  = σ(read_proj(y)  + depth_bias[pos])
-damp_gate  = σ(damp_proj(y)  + depth_bias[pos])
+read_gate  = σ(read_up(read_down(RMSNorm(y))) + depth_bias[pos])
+damp_gate  = σ(damp_up(damp_down(RMSNorm(y))) + depth_bias[pos])
 forget_gate= σ(forget_proj(RMSNorm(m)) + depth_bias[pos])
-update_gate= σ(update_proj(y) + depth_bias[pos])
+update_gate= σ(update_up(update_down(RMSNorm(y))) + depth_bias[pos])
 
 h_new = damp_gate * h_prev + y + read_gate * (memory_gain * memory_out(RMSNorm(m)))
 m_new = forget_gate * m + update_gate * tanh(y)
@@ -100,7 +100,7 @@ All gate weights are low-rank (d → rank → d). All gates start near their ide
 ### VEGA
 
 ```
-K = key_proj(y),  V = val_proj(y),  Q = query_proj(y)
+K = key_proj(RMSNorm(y)),  V = val_proj(RMSNorm(y)),  Q = query_proj(RMSNorm(y))
 K_dep = RMSNorm(K) / sqrt(r_head)
 Q_dep = RMSNorm(Q + query_bias[pos]) / sqrt(r_head)
 φ(x) = ELU(x) + 1

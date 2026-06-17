@@ -44,19 +44,19 @@ RR replaces uniform accumulation with a **gated depth-wise working memory** $\ma
 $$\mathbf{y}_l = \mathcal{F}_l(\text{LayerNorm}(\mathbf{h}_{l-1}))$$
 
 **Read gate** (how much memory to inject):
-$$\mathbf{r}_l = \sigma(\mathbf{W}_r \text{RMSNorm}(\mathbf{y}_l) + \mathbf{p}_r[l])$$
+$$\mathbf{r}_l = \sigma(\mathbf{W}_{r,\text{up}}(\mathbf{W}_{r,\text{down}} \text{RMSNorm}(\mathbf{y}_l)) + \mathbf{p}_r[l])$$
 
 **Damp gate** (how much of the previous hidden state to keep):
-$$\mathbf{d}_l = \sigma(\mathbf{W}_d \text{RMSNorm}(\mathbf{y}_l) + \mathbf{p}_d[l])$$
+$$\mathbf{d}_l = \sigma(\mathbf{W}_{d,\text{up}}(\mathbf{W}_{d,\text{down}} \text{RMSNorm}(\mathbf{y}_l)) + \mathbf{p}_d[l])$$
 
 **Hidden state update**:
 $$\mathbf{h}_l = \mathbf{d}_l \odot \mathbf{h}_{l-1} + \mathbf{y}_l + \mathbf{r}_l \odot (\mathbf{g}_m \odot \mathbf{W}_{\text{out}}(\text{RMSNorm}(\mathbf{m}_{l-1})))$$
 
 **Forget gate** (how much of the old memory to retain):
-$$\mathbf{f}_l = \sigma(\mathbf{W}_f \text{RMSNorm}(\mathbf{m}_{l-1}) + \mathbf{p}_f[l])$$
+$$\mathbf{f}_l = \sigma(\mathbf{W}_{f,\text{up}}(\mathbf{W}_{f,\text{down}} \text{RMSNorm}(\mathbf{m}_{l-1})) + \mathbf{p}_f[l])$$
 
 **Update gate** (how aggressively to write the new output):
-$$\mathbf{u}_l = \sigma(\mathbf{W}_u \text{RMSNorm}(\mathbf{y}_l) + \mathbf{p}_u[l])$$
+$$\mathbf{u}_l = \sigma(\mathbf{W}_{u,\text{up}}(\mathbf{W}_{u,\text{down}} \text{RMSNorm}(\mathbf{y}_l)) + \mathbf{p}_u[l])$$
 
 **Memory update**:
 $$\mathbf{m}_l = \mathbf{f}_l \odot \mathbf{m}_{l-1} + \mathbf{u}_l \odot \tanh(\mathbf{y}_l)$$
@@ -153,7 +153,7 @@ $$\boldsymbol{\alpha} = \sigma(\text{decay}[pos]) \quad (\text{per-head, per-ran
 For both states, the normalization update is:
 $$\mathbf{z}_\text{new} = \boldsymbol{\alpha} \odot \mathbf{z}_\text{prev} + \phi(\mathbf{K}_{dep})$$
 
-where $g = \sigma(\mathbf{W}_g \mathbf{y})$ is a write gate that controls how much of $\mathbf{V}$
+where $g = \sigma(\mathbf{W}_g \text{RMSNorm}(\mathbf{y}))$ is a write gate that controls how much of $\mathbf{V}$
 enters the state.
 
 ### 4.5 Initialization & Regularization
@@ -214,8 +214,8 @@ Keeps the complete history of all sublayer states. Every layer attends to every 
 
 | Variant | Memory per Token | Compute per Sublayer |
 |---|---|---|
-| BlockAttnRes (block size B) | O(B · d) | O(B · d) |
-| FullAttnRes | O(2L · d) | O(L · d) |
+| BlockAttnRes (block size $B$) | $O(B \cdot d)$ | $O(B \cdot d)$ |
+| FullAttnRes | $O(2L \cdot d)$ | $O(L \cdot d)$ |
 
 ### 5.4 Relation to the Design Ladder
 
@@ -228,16 +228,16 @@ In the benchmark suite, BlockAttnRes is the **quadratic target** — what the ch
 ## 6. Summary Comparison
 
 | Property | Standard | RR | VEGA | AttnRes (Block) |
-|---|---|---|---|---|---|
-| **Rung** | 0 | 1 | 2 | 3 |
-| **Mechanism** | Fixed addition | Gated recurrency | Linear-attention EMA | Softmax over blocks |
+|---|---|---|---|---|
+| **Rung** | $0$ | $1$ | $2$ | $3$ |
+| **Mechanism** | Fixed addition | Gated recurrence | Linear-attention EMA | Softmax over blocks |
 | **History aggregation** | None | Implicit (gates) | QKV linear-attention | Full softmax |
-| **Complexity / sublayer** | O(d) | O(rank · d) | O(n_h · r_h · d) | O(B · d) |
-| **Memory / token** | O(d) | O(2d) | O(n_h · r_h²) | O(B · d) |
-| **Init behavior** | N/A | 0.953·h + y | 0.953·h + y | mean(history) |
-| **Strict zero-start** | — | soft | soft | no |
-| **New hyperparameters** | None | 0 (bias values) | rank, n_heads, fast/slow | block_size |
-| **Reference** | — | this work | this work | Kimi / Moonshot 2025 |
+| **Complexity / sublayer** | $O(d)$ | $O(r \cdot d)$ | $O(n_h \, r_h \, d)$ | $O(B \cdot d)$ |
+| **Memory / token** | $O(d)$ | $O(2d)$ | $O(n_h \, r_h)$ | $O(B \cdot d)$ |
+| **Init behavior** | $h + y$ (exact) | $\approx\! 0.953h + y$ | $\approx\! 0.953h + y$ | $\mathrm{mean}(\mathrm{history})$ |
+| **Strict zero-start** | exact | soft | soft | none |
+| **New hyperparameters** | — | bias values | $r_h$, $n_h$, decay range | block size $B$ |
+| **Reference** | — | this work | this work | Moonshot AI (2025) |
 
 ---
 
