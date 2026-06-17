@@ -414,6 +414,18 @@ class StatusCallback(Callback):
             return
         tokens_per_second = self.throughput.tokens_per_second(step)
         pl_module.log("perf/tokens_per_second", tokens_per_second, on_step=True)
+
+        # Visible progress line in Modal logs
+        loss_val = float(trainer.callback_metrics.get("train/loss", 0))
+        ppl_val = float(trainer.callback_metrics.get("train/ppl", 0))
+        progress_pct = step / max(1, trainer.max_steps) * 100
+        print(
+            f"[{self.residual_mode}] step {step}/{trainer.max_steps} "
+            f"({progress_pct:.1f}%) | loss={loss_val:.3f} ppl={ppl_val:.1f} "
+            f"| {tokens_per_second:,.0f} tok/s | vram={peak_cuda_memory_mb():.0f} MiB",
+            flush=True,
+        )
+
         write_status(
             self.benchmark_name,
             self.residual_mode,
