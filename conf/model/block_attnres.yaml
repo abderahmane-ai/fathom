@@ -1,4 +1,4 @@
-# conf/model/attnres.yaml — Block Attention Residuals transformer, depth-scaled
+# conf/model/block_attnres.yaml — Block Attention Residuals transformer, depth-scaled
 #
 # 48 layers, d_model=256 → 53.9M params.
 # BlockAttnRes is O(L²) memory; use small block_size at depth.

@@ -36,6 +36,9 @@ reports = [
     "tabulate>=0.9",
 ]
 
+[project.urls]
+Repository = "https://github.com/abderahmane-ai/recurrent-residuals"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["src*"]

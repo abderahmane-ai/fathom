@@ -9,10 +9,10 @@ updates:
       prefix: "deps"
     labels:
       - "dependencies"
-    # Group patch + minor updates into a single PR per week to reduce noise.
     groups:
-      patch-and-minor:
-        update-types: ["minor", "patch"]
+      all-deps:
+        patterns:
+          - "*"
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -22,3 +22,7 @@ updates:
       prefix: "ci"
     labels:
       - "ci"
+    groups:
+      all-actions:
+        patterns:
+          - "*"

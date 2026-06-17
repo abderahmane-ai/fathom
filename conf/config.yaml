@@ -8,7 +8,7 @@
 defaults:
   - model: standard        # which residual mode
   - trainer: default
-  - data: wikitext103
+  - data: tinystories
   - _self_
 
 seed: 42

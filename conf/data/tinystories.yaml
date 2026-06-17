@@ -1,4 +1,4 @@
-# conf/data/wikitext103.yaml — TinyStories data config
+# conf/data/tinystories.yaml — TinyStories data config
 #
 # TinyStories trains faster than WikiText-103 and gives meaningful
 # perplexity comparisons at small scale.

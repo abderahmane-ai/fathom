@@ -154,10 +154,9 @@ def main(wait: bool = False, compile: bool = False) -> None:
     run_id = make_run_id(BENCHMARK_NAME)
     cfg = load_benchmark_config(BENCHMARK_NAME)
     mode_funcs = {
-        "standard": run_standard,
-        "recurrent_residual": run_recurrent_residual,
-        "vega": run_vega,
-        "block_attnres": run_block_attnres,
+        "vega_no_var_reg": run_vega_no_var_reg,
+        "vega_no_multiscale": run_vega_no_multiscale,
+        "rr_no_depth_biases": run_rr_no_depth_biases,
     }
     handles = {
         mode: mode_funcs[mode].spawn(run_id, compile=compile)

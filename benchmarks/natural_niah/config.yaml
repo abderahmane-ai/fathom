@@ -43,6 +43,9 @@ data:
   dataset_config: default
   tokenizer_name: gpt2
   max_seq_len: 128
+  batch_size: 32
+  batch_size_block_attnres: 8
+  num_workers: 4
 
 benchmark:
   task: natural_niah

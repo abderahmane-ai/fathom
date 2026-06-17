@@ -1,0 +1,18 @@
+# conf/model/full_attnres.yaml — Full Attention Residuals transformer, depth-scaled
+#
+# 48 layers, d_model=256 → 53.9M params.
+# FullAttnRes is O(L²) memory — use only at small depth for reference.
+# @package model
+
+residual_mode: full_attnres
+
+d_model: 256
+n_heads: 8
+ff_dim: 768
+num_layers: 48
+max_seq_len: 128
+vocab_size: 50257
+dropout: 0.1
+
+full_attnres:
+  max_layers: 24  # safety cap; override with care

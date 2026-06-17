@@ -1,8 +1,8 @@
 seed: 42
 modes:
-  - standard
-  - recurrent_residual
-  - vega
+  - vega_no_var_reg
+  - vega_no_multiscale
+  - rr_no_depth_biases
 
 model:
   residual_mode: vega
@@ -58,7 +58,7 @@ trainer:
     betas: [0.9, 0.95]
 
 benchmark:
-  task: depth_needle
+  task: ablation
   max_params: 60000000
   max_steps: 3000
   estimated_train_batches: 1000

@@ -105,6 +105,8 @@ class TransformerLayer(nn.Module):
                 num_channels=int(getattr(hc_cfg, "num_channels", 2)),
                 use_static_input=bool(getattr(hc_cfg, "use_static_input", False)),
                 init_static_gate=float(getattr(hc_cfg, "init_static_gate", 0.0)),
+                algorithm=str(getattr(hc_cfg, "algorithm", "sinkhorn_knopp")),
+                t_max=int(getattr(hc_cfg, "t_max", 20)),
             )
 
         self.residual_mode: str = config.residual_mode

@@ -10,6 +10,7 @@
 seed: 42
 modes:
   - standard
+  - recurrent_residual
   - vega
   - block_attnres
 

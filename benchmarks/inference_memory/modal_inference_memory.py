@@ -111,15 +111,15 @@ def run_memory_profile(run_id: str, compile: bool = False) -> None:
                     }
                     for L in [12, 24, 48, 96]
                 ]
-                for mode in ["standard", "recurrent_residual", "vega", "block_attnres"]
+                for mode in benchmark_modes(cfg)
             }
         else:
-            modes = ["standard", "recurrent_residual", "vega", "block_attnres"]
+            modes = benchmark_modes(cfg)
             depths = [12, 24, 48, 96]
             seq_len = 100
             vocab_size = 1024
             results = {mode: [] for mode in modes}
-            base_cfg = load_benchmark_config(BENCHMARK_NAME)
+            base_cfg = cfg
 
             for mode in modes:
                 for L in depths:
@@ -209,19 +209,10 @@ def run_memory_profile(run_id: str, compile: bool = False) -> None:
 @app.local_entrypoint()
 def main(wait: bool = False, compile: bool = False) -> None:
     run_id = make_run_id(BENCHMARK_NAME)
-    cfg = load_benchmark_config(BENCHMARK_NAME)
-    mode_funcs = {
-        "standard": run_standard,
-        "recurrent_residual": run_recurrent_residual,
-        "vega": run_vega,
-        "block_attnres": run_block_attnres,
-    }
-    handles = {
-        mode: mode_funcs[mode].spawn(run_id, compile=compile)
-        for mode in benchmark_modes(cfg)
-    }
+    # Inference memory profiles all modes in a single GPU run.
+    handles = {"all_modes": run_memory_profile.spawn(run_id, compile=compile)}
     manifest = write_spawn_manifest(BENCHMARK_NAME, handles, run_id)
-    print(f"Spawned {BENCHMARK_NAME} jobs with run_id={run_id}")
+    print(f"Spawned {BENCHMARK_NAME} job with run_id={run_id}")
     print(f"Manifest: {manifest}")
     if wait:
         for mode, handle in handles.items():

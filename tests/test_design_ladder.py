@@ -1,6 +1,6 @@
 """Design-ladder tests: verify the init contract for every residual mechanism.
 
-The five mechanisms in this project form a **design ladder** of progressively
+The four mechanisms in this project form a **design ladder** of progressively
 richer approximations of the same operation (letting a layer reach back into
 the history of depth states).  See METHODOLOGY.md §1.1 for the full framing.
 
@@ -13,15 +13,7 @@ defined baseline.  This file codifies that contract rung by rung:
   |    0 | standard  | h_prev + (sublayer outputs)  | yes (trivial)       |
   |    1 | rr        | σ(+3)·h_prev + y ≈ 0.953·h + y | no (soft)          |
   |    2 | vega      | σ(+3)·h_prev + y ≈ 0.953·h + y | no (soft)          |
-  |    3 | mhc       | H_res·H + 2·σ(±1)·y ≈ H + 1.462·y[0]+0.538·y[1] | no (paper's approximate) |
-  |    4 | attnres   | mean([*blocks, partial])      | n/a (uniform mean)  |
-
-  mHC has two algorithm variants (see METHODOLOGY.md §5.2):
-  - ``algorithm="sinkhorn_knopp"`` (default) — the original DeepSeek mHC
-    paper (arXiv:2512.24880), H_res computed via 20 Sinkhorn-Knopp iterations.
-  - ``algorithm="permutation_convex"`` — the mHC-Lite variant
-    (arXiv:2601.05732), H_res computed via convex combination of permutation
-    matrices (Birkhoff-von Neumann, exact doubly-stochasticity for n=2).
+  |    3 | attnres   | mean([*blocks, partial])      | n/a (uniform mean)  |
 
 The parametrised summary at the bottom is a **documentation test** — it
 always passes, but its parametrise block reads as a table of the exact

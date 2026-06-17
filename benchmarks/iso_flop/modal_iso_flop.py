@@ -9,7 +9,7 @@ import sys
 import modal
 
 from benchmarks.common.artifacts import repo_root
-from benchmarks.common.configs import benchmark_modes, config_for_mode, load_benchmark_config, make_run_id
+from benchmarks.common.configs import config_for_mode, load_benchmark_config, make_run_id
 from benchmarks.common.modal_utils import (
     ARTIFACT_MOUNT,
     REMOTE_ROOT,
@@ -66,7 +66,7 @@ def run_wide_shallow(run_id: str, compile: bool = False) -> None:
     _prepare_remote()
     from benchmarks.common.lightning_engine import run_benchmark
 
-    cfg = load_benchmark_config("scaling_efficiency")  # Base it on scaling efficiency config
+    cfg = load_benchmark_config(BENCHMARK_NAME)  # iso_flop config base
     cfg = config_for_mode(cfg, "standard")
     cfg.compile = compile
 
@@ -107,16 +107,12 @@ def run_narrow_deep(run_id: str, mode: str = "vega", compile: bool = False) -> N
 @app.local_entrypoint()
 def main(wait: bool = False, compile: bool = False) -> None:
     run_id = make_run_id(BENCHMARK_NAME)
-    cfg = load_benchmark_config(BENCHMARK_NAME)
-    mode_funcs = {
-        "standard": run_standard,
-        "recurrent_residual": run_recurrent_residual,
-        "vega": run_vega,
-        "block_attnres": run_block_attnres,
-    }
+    # ISOFlop runs two architectural variants (wide-shallow standard, narrow-deep VEGA/RR)
+    # rather than per-mode dispatch.
     handles = {
-        mode: mode_funcs[mode].spawn(run_id, compile=compile)
-        for mode in benchmark_modes(cfg)
+        "standard_wide": run_wide_shallow.spawn(run_id, compile=compile),
+        "vega_narrow": run_narrow_deep.spawn(run_id, mode="vega", compile=compile),
+        "rr_narrow": run_narrow_deep.spawn(run_id, mode="recurrent_residual", compile=compile),
     }
     manifest = write_spawn_manifest(BENCHMARK_NAME, handles, run_id)
     print(f"Spawned {BENCHMARK_NAME} jobs with run_id={run_id}")

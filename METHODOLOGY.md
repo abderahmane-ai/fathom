@@ -243,7 +243,7 @@ In the benchmark suite, BlockAttnRes is the **quadratic target** — what the ch
 
 ## 7. Evaluation Metrics
 
-### 8.1 Depth Preservation Score (DPS) and Dilution Resistance Index (DRI)
+### 7.1 Depth Preservation Score (DPS) and Dilution Resistance Index (DRI)
 
 **DPS(k)** measures how linearly accessible layer $k$'s representation is from the final hidden state $\mathbf{s}$. A Ridge regression probe (λ = 1) is fit from $\mathbf{s}$ to each normalized intermediate activation $\mathbf{a}_k$:
 
@@ -251,7 +251,7 @@ $$\text{DPS}(k) = 1 - \frac{\sum_i \|\mathbf{a}_k^{(i)} - (\mathbf{W} \mathbf{s}
 
 **DRI** averages DPS over the early half of the network (layers 1 to ⌊L/2⌋), summarizing overall resistance to information dilution.
 
-### 8.2 Gradient Preservation Score (GPS) and Gradient Preservation Index (GPI)
+### 7.2 Gradient Preservation Score (GPS) and Gradient Preservation Index (GPI)
 
 **GPS(k)** measures whether the task-relevant direction at layer $k$ is still recoverable from the final state. The implicit early gradient is:
 
@@ -259,7 +259,7 @@ $$\mathbf{g}_k^{(i)} = \mathbf{W}_\text{head}^\top (\text{softmax}(\mathbf{a}_k^
 
 A Ridge regression probe is fit from $\mathbf{s}$ to $\mathbf{g}_k$, and GPS is the resulting $R^2$ score. **GPI** is the average GPS over the first half of the network.
 
-### 8.3 Interpretation
+### 7.3 Interpretation
 
 | DRI | GPI | Perplexity | Interpretation |
 |---|---|---|---|
