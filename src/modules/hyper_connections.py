@@ -46,7 +46,7 @@ At init:
                                           zero dominates the off-diagonal −8)
 
 This is an **approximate** zero-start: not bit-for-bit standard residual,
-but the closest the papers' init protocols get.  See METHODOLOGY.md §5.2
+but the closest the papers' init protocols get.  See METHODOLOGY.md §1.1
 for the full discussion of the strict-vs-soft init distinction.
 """
 
