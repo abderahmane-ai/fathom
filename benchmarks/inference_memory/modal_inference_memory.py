@@ -18,7 +18,7 @@ from benchmarks.common.artifacts import (
     write_run_metadata,
     write_status,
 )
-from benchmarks.common.configs import config_for_mode, load_benchmark_config, make_run_id
+from benchmarks.common.configs import benchmark_modes, config_for_mode, load_benchmark_config, make_run_id
 from benchmarks.common.inference_latency import profile_forward
 from benchmarks.common.modal_utils import (
     ARTIFACT_MOUNT,
@@ -209,8 +209,16 @@ def run_memory_profile(run_id: str, compile: bool = False) -> None:
 @app.local_entrypoint()
 def main(wait: bool = False, compile: bool = False) -> None:
     run_id = make_run_id(BENCHMARK_NAME)
+    cfg = load_benchmark_config(BENCHMARK_NAME)
+    mode_funcs = {
+        "standard": run_standard,
+        "recurrent_residual": run_recurrent_residual,
+        "vega": run_vega,
+        "block_attnres": run_block_attnres,
+    }
     handles = {
-        "profile": run_memory_profile.spawn(run_id, compile=compile),
+        mode: mode_funcs[mode].spawn(run_id, compile=compile)
+        for mode in benchmark_modes(cfg)
     }
     manifest = write_spawn_manifest(BENCHMARK_NAME, handles, run_id)
     print(f"Spawned {BENCHMARK_NAME} jobs with run_id={run_id}")

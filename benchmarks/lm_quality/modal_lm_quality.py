@@ -9,7 +9,7 @@ import sys
 import modal
 
 from benchmarks.common.artifacts import repo_root
-from benchmarks.common.configs import config_for_mode, load_benchmark_config, make_run_id
+from benchmarks.common.configs import benchmark_modes, config_for_mode, load_benchmark_config, make_run_id
 from benchmarks.common.modal_utils import (
     ARTIFACT_MOUNT,
     REMOTE_ROOT,
@@ -175,11 +175,16 @@ def main(wait: bool = False, compile: bool = False) -> None:
         None.
     """
     run_id = make_run_id(BENCHMARK_NAME)
+    cfg = load_benchmark_config(BENCHMARK_NAME)
+    mode_funcs = {
+        "standard": run_standard,
+        "recurrent_residual": run_recurrent_residual,
+        "vega": run_vega,
+        "block_attnres": run_block_attnres,
+    }
     handles = {
-        "standard": run_standard.spawn(run_id, compile=compile),
-        "recurrent_residual": run_recurrent_residual.spawn(run_id, compile=compile),
-        "vega": run_vega.spawn(run_id, compile=compile),
-        "block_attnres": run_block_attnres.spawn(run_id, compile=compile),
+        mode: mode_funcs[mode].spawn(run_id, compile=compile)
+        for mode in benchmark_modes(cfg)
     }
     manifest = write_spawn_manifest(BENCHMARK_NAME, handles, run_id)
     print(f"Spawned {BENCHMARK_NAME} jobs with run_id={run_id}")
