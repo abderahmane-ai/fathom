@@ -79,4 +79,4 @@ scratch/
 plots/
 results/
 *.png
-*.pdf
+*.pdfbenchmarks/*/last_spawn.json

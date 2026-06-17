@@ -577,7 +577,7 @@ def run_benchmark(cfg: DictConfig, benchmark_name: str, residual_mode: str, run_
         callbacks=callbacks,
         log_every_n_steps=int(cfg.benchmark.get("log_every_n_steps", 50)),
         val_check_interval=resolve_val_check_interval(
-            int(cfg.benchmark.get("estimated_train_batches", 1000)),
+            int(cfg.benchmark.get("estimated_train_batches") or 1000),
             cfg.benchmark.get("val_check_interval", 500),
         ),
         gradient_clip_val=float(cfg.trainer.get("gradient_clip_val", 1.0)),

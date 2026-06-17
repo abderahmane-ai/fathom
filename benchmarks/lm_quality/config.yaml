@@ -78,7 +78,7 @@ benchmark:
   task: lm
   max_params: 60000000
   max_steps: 20000       # 20000 × 96 × 128 = 245.8M tokens per mode
-  estimated_train_batches: null
+  estimated_train_batches: 200    # ~batches per epoch (1.5M tokens / (96×128))
   val_check_interval: 2000
   checkpoint_every_n_steps: 5000
   status_every_n_steps: 100
