@@ -11,6 +11,7 @@ seed: 42
 modes:
   - standard
   - vega
+  - block_attnres
 
 model:
   residual_mode: standard
@@ -51,6 +52,7 @@ data:
   tokenizer_name: gpt2
   max_seq_len: 128
   batch_size: 96
+  batch_size_block_attnres: 24   # reduced for O(L²) memory at 48 layers
   num_workers: 4
   tokenization_num_proc: 4
   packed_cache_dir: null
