@@ -80,3 +80,4 @@ plots/
 results/
 *.png
 *.pdfbenchmarks/*/last_spawn.json
+last_spawn.json

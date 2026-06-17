@@ -68,6 +68,8 @@ class LanguageModelDataModule(LightningDataModule):
             return torch.load(cache_path, map_location="cpu", weights_only=True)
 
         tokenizer = AutoTokenizer.from_pretrained(self.cfg.tokenizer_name, use_fast=True)
+        assert tokenizer is not None
+        tokenizer.model_max_length = 1_000_000  # suppress HF warning; we pack+chunk to actual seq_len
         raw = load_dataset(
             self.cfg.dataset_name,
             self.cfg.dataset_config,
